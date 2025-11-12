@@ -1,0 +1,6 @@
+Applications:
+    aragonite:
+        app_types:
+            - aragoniteApp
+        content_directory: ${ROOT_DIR}/doc/content
+        log_default: WARNING
