@@ -4,6 +4,9 @@
 #include "ModulesApp.h"
 #include "MooseSyntax.h"
 
+// Custom materials
+#include "OrthotropicPlasticityStressUpdate.h"
+
 InputParameters
 aragoniteApp::validParams()
 {
@@ -28,6 +31,9 @@ aragoniteApp::registerAll(Factory & f, ActionFactory & af, Syntax & syntax)
   Registry::registerActionsTo(af, {"aragoniteApp"});
 
   /* register custom execute flags, action syntax, etc. here */
+  // Register custom materials
+  registerMooseObject("aragoniteApp", OrthotropicPlasticityStressUpdate);
+
 }
 
 void

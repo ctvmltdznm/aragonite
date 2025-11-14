@@ -7,6 +7,7 @@
 #
 ###############################################################################
 # Use the MOOSE submodule if it exists and MOOSE_DIR is not set
+MOOSE_DIR := /home/ctvmltdznm/projects/moose
 MOOSE_SUBMODULE    := $(CURDIR)/moose
 ifneq ($(wildcard $(MOOSE_SUBMODULE)/framework/Makefile),)
   MOOSE_DIR        ?= $(MOOSE_SUBMODULE)
@@ -46,7 +47,7 @@ RAY_TRACING                 := no
 REACTOR                     := no
 RDG                         := no
 RICHARDS                    := no
-SOLID_MECHANICS             := no
+SOLID_MECHANICS             := yes
 STOCHASTIC_TOOLS            := no
 THERMAL_HYDRAULICS          := no
 XFEM                        := no
