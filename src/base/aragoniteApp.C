@@ -4,8 +4,11 @@
 #include "ModulesApp.h"
 #include "MooseSyntax.h"
 
+#include "SolidMechanicsApp.h"
+
 // Custom materials
 #include "OrthotropicPlasticityStressUpdate.h"
+#include "ComputeElasticityTensorCoupled.h"
 
 InputParameters
 aragoniteApp::validParams()
@@ -26,13 +29,26 @@ aragoniteApp::~aragoniteApp() {}
 void
 aragoniteApp::registerAll(Factory & f, ActionFactory & af, Syntax & syntax)
 {
-  ModulesApp::registerAllObjects<aragoniteApp>(f, af, syntax);
+  SolidMechanicsApp::registerAll(f, af, syntax);
+  //ModulesApp::registerAllObjects<aragoniteApp>(f, af, syntax);
+  //ModulesApp::registerAll(f, af, syntax);  // Registers EVERYTHING including syntax
+
+  //ModulesApp::registerAllObjects<aragoniteApp>(f, af, syntax);
   Registry::registerObjectsTo(f, {"aragoniteApp"});
   Registry::registerActionsTo(af, {"aragoniteApp"});
+
+//  syntax.registerActionSyntax("CohesiveZoneMasterAction", 
+//                               "Physics/SolidMechanics/CohesiveZoneMaster/*");
+
+//  syntax.registerActionSyntax("TensorMechanicsAction",
+//                               "Physics/SolidMechanics/QuasiStatic/*");
+//  syntax.registerActionSyntax("CommonTensorMechanicsAction",
+//                               "Physics/SolidMechanics/QuasiStatic/*");
 
   /* register custom execute flags, action syntax, etc. here */
   // Register custom materials
   registerMooseObject("aragoniteApp", OrthotropicPlasticityStressUpdate);
+  registerMooseObject("aragoniteApp", ComputeElasticityTensorCoupled);
 
 }
 
