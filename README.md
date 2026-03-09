@@ -76,6 +76,10 @@ paraview x_tension_out.e
 ```bash
 cd scripts
 
+# After cloning, make the validation scripts executable:
+chmod +x *.sh
+chmod +x *.py
+
 # Run all 21 validation tests
 ./run_validation.sh
 
