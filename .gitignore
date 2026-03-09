@@ -357,6 +357,7 @@ share/
 OutputData
 !**/gold/**/OutputData
 !**/gold/**/OutputData/**/*.e
+!**/test/validation/rve/**/*.e
 !**/gold/**/OutputData/**/*.e-s*
 !**/gold/**/OutputData/**/*.csv
 !**/gold/**/OutputData/**/*.csv.*
@@ -365,6 +366,7 @@ OutputData
 !**/gold/**/OutputData/**/*.pvtu
 !**/gold/**/OutputData/**/*.xml*
 !**/gold/**/OutputData/**/*.json*
+
 
 # PETSc binary output
 binaryoutput
