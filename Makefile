@@ -7,7 +7,7 @@
 #
 ###############################################################################
 # Use the MOOSE submodule if it exists and MOOSE_DIR is not set
-MOOSE_DIR := /home/ctvmltdznm/projects/moose
+# MOOSE_DIR := /home/ctvmltdznm/projects/moose # following the instruciton in docs, should be added to .bashrc
 MOOSE_SUBMODULE    := $(CURDIR)/moose
 ifneq ($(wildcard $(MOOSE_SUBMODULE)/framework/Makefile),)
   MOOSE_DIR        ?= $(MOOSE_SUBMODULE)
