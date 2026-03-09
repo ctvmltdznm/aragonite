@@ -11,7 +11,7 @@ For more information see: [https://mooseframework.inl.gov/getting_started/new_us
 
 ## Overview
 
-This framework bridges molecular dynamics (MD) simulations to continuum finite element analysis (FEA) for modeдling coral aragonite biomechanics. Key features:
+This framework bridges molecular dynamics (MD) simulations to continuum finite element analysis (FEA) for modelling coral aragonite biomechanics. Key features:
 
 - **Orthotropic plasticity** with quadric yield surface (Schwiedrzik formulation)
 - **Tension-compression asymmetry** via linear term in yield function
