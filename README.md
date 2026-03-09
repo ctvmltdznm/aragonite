@@ -2,7 +2,6 @@
 
 A multiscale finite element framework for modeling coral aragonite biomechanics, implemented in the [MOOSE](https://mooseframework.inl.gov/) framework.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 <!-- Add after Zenodo upload: -->
 <!-- [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXX) -->
 
