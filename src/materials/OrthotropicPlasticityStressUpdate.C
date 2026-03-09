@@ -38,6 +38,11 @@ OrthotropicPlasticityStressUpdate::validParams()
   params.addParam<Real>("sigma_yy_compression", "Yield strength in yy direction (compression) [MPa]");
   params.addParam<Real>("sigma_zz_compression", "Yield strength in zz direction (compression) [MPa]");
   
+  // Yield surface coupling (optional, defaults to 0 = uncoupled)
+  params.addParam<Real>("zeta12", 0.0, "X-Y coupling parameter (12 interaction)");
+  params.addParam<Real>("zeta13", 0.0, "X-Z coupling parameter (13 interaction)");
+  params.addParam<Real>("zeta23", 0.0, "Y-Z coupling parameter (23 interaction)");  // Euler angles for material orientation
+  
   // Euler angles for material orientation
   params.addRequiredCoupledVar("euler_angle_1", "First Euler angle (phi1) in degrees");
   params.addRequiredCoupledVar("euler_angle_2", "Second Euler angle (Phi) in degrees");
@@ -114,6 +119,11 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
     _sigma_zz_compression(isParamValid("sigma_zz_compression") ? 
                           getParam<Real>("sigma_zz_compression") : _sigma_zz_tension),
     
+    // Yield surface coupling
+    _zeta12(getParam<Real>("zeta12")),
+    _zeta13(getParam<Real>("zeta12")),
+    _zeta23(getParam<Real>("zeta12")),
+    
     // Euler angles
     _euler_angle_1(coupledValue("euler_angle_1")),
     _euler_angle_2(coupledValue("euler_angle_2")),
@@ -166,6 +176,7 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
     _damage_old(getMaterialPropertyOld<Real>("damage_variable")),
     
     // Diagnostics
+    _yield_function(declareProperty<Real>("yield_function")),
     _return_mapping_stage(declareProperty<Real>("return_mapping_stage")),
     _return_mapping_iterations(declareProperty<Real>("return_mapping_iterations"))
 {
@@ -213,23 +224,46 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   Real sigma_c_yy = _sigma_yy_compression;
   Real sigma_c_zz = _sigma_zz_compression;
   
-  // Average strengths for quadric part
-  Real sigma_xx_avg = 0.5 * (sigma_t_xx + sigma_c_xx);
-  Real sigma_yy_avg = 0.5 * (sigma_t_yy + sigma_c_yy);
-  Real sigma_zz_avg = 0.5 * (sigma_t_zz + sigma_c_zz);
+  // F matrix diagonal terms from yield condition first principles
+  // For normal stresses: F_ii = [(σ_t + σ_c)/(2 σ_t σ_c)]²
+  // For shear stresses: F_ij = 1/τ²
+  // Derivation: From φ = √(σ:F:σ) + f·σ = 1 at yield
   
-  // Normalize to get dimensionless F matrix
-  Real norm = 1.0;  // Keep dimensional for now
+  Real F_xx_sqrt = (sigma_t_xx + sigma_c_xx) / (2.0 * sigma_t_xx * sigma_c_xx);
+  Real F_yy_sqrt = (sigma_t_yy + sigma_c_yy) / (2.0 * sigma_t_yy * sigma_c_yy);
+  Real F_zz_sqrt = (sigma_t_zz + sigma_c_zz) / (2.0 * sigma_t_zz * sigma_c_zz);
   
-  // Diagonal terms (normal stresses)
-  _F_matrix[0][0] = norm / (sigma_xx_avg * sigma_xx_avg);  // xx
-  _F_matrix[1][1] = norm / (sigma_yy_avg * sigma_yy_avg);  // yy
-  _F_matrix[2][2] = norm / (sigma_zz_avg * sigma_zz_avg);  // zz
+  // Normal stress terms (squared)
+  _F_matrix[0][0] = F_xx_sqrt * F_xx_sqrt;
+  _F_matrix[1][1] = F_yy_sqrt * F_yy_sqrt;
+  _F_matrix[2][2] = F_zz_sqrt * F_zz_sqrt;
   
   // Shear terms
-  _F_matrix[3][3] = norm / (_tau_yz_max * _tau_yz_max);  // yz, not sure about 4.0
-  _F_matrix[4][4] = norm / (_tau_xz_max * _tau_xz_max);  // xz
-  _F_matrix[5][5] = norm / (_tau_xy_max * _tau_xy_max);  // xy
+  _F_matrix[3][3] = 1.0 / (_tau_yz_max * _tau_yz_max);
+  _F_matrix[4][4] = 1.0 / (_tau_xz_max * _tau_xz_max);
+  _F_matrix[5][5] = 1.0 / (_tau_xy_max * _tau_xy_max);
+  
+  // Off-diagonal coupling (if any zeta != 0)
+  if (std::abs(_zeta12) > 1e-12 || std::abs(_zeta13) > 1e-12 || std::abs(_zeta23) > 1e-12) {
+  
+    // X-Y coupling (1-2)
+    _F_matrix[0][1] = -_zeta12 * std::sqrt(_F_matrix[0][0] * _F_matrix[1][1]);
+    _F_matrix[1][0] = _F_matrix[0][1];  // Symmetric
+  
+    // X-Z coupling (1-3)
+    _F_matrix[0][2] = -_zeta13 * std::sqrt(_F_matrix[0][0] * _F_matrix[2][2]);
+    _F_matrix[2][0] = _F_matrix[0][2];  // Symmetric
+  
+    // Y-Z coupling (2-3)
+    _F_matrix[1][2] = -_zeta23 * std::sqrt(_F_matrix[1][1] * _F_matrix[2][2]);
+    _F_matrix[2][1] = _F_matrix[1][2];  // Symmetric
+  }
+  
+  // Linear term for tension/compression asymmetry
+  _f_lin_vector[0] = (sigma_c_xx - sigma_t_xx) / (2.0 * sigma_c_xx * sigma_t_xx);  // xx
+  _f_lin_vector[1] = (sigma_c_yy - sigma_t_yy) / (2.0 * sigma_c_yy * sigma_t_yy);  // yy
+  _f_lin_vector[2] = (sigma_c_zz - sigma_t_zz) / (2.0 * sigma_c_zz * sigma_t_zz);  // zz
+  // Shear components are zero (symmetric in shear)
   
   //debug
   /*Moose::out << "*** norm = " << norm << "\n";
@@ -241,11 +275,6 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   Real test_quadric = test_stress * test_stress * _F_matrix[5][5];
   Moose::out << "*** If stress=2427: quadric=" << test_quadric << ", phi=" << std::sqrt(test_quadric) << "\n";
   */
-  // Linear term for tension/compression asymmetry
-  _f_lin_vector[0] = (sigma_c_xx - sigma_t_xx) / (sigma_c_xx * sigma_t_xx);  // xx
-  _f_lin_vector[1] = (sigma_c_yy - sigma_t_yy) / (sigma_c_yy * sigma_t_yy);  // yy
-  _f_lin_vector[2] = (sigma_c_zz - sigma_t_zz) / (sigma_c_zz * sigma_t_zz);  // zz
-  // Shear components are zero (symmetric in shear)
 }
 
 void
@@ -436,7 +465,13 @@ OrthotropicPlasticityStressUpdate::updateState(
   // stress_new = stress_return;
   
   // Compute inelastic strain increment in material coordinates
-  RankTwoTensor plastic_strain_increment = delta_kappa * computeYieldGradient(stress_return);
+  //RankTwoTensor plastic_strain_increment = delta_kappa * computeYieldGradient(stress_return);
+
+  // Normalize at final stress
+  RankTwoTensor DSY_final = computeYieldGradient(stress_return);
+  Real HI_final = DSY_final.L2norm();
+  RankTwoTensor NP_final = DSY_final / HI_final;
+  RankTwoTensor plastic_strain_increment = delta_kappa * NP_final;  // Normalized!
   
   // Rotate plastic strain to global coordinates
   inelastic_strain_increment = rotateToGlobal(plastic_strain_increment, R);
@@ -632,6 +667,7 @@ OrthotropicPlasticityStressUpdate::performNewtonRaphson(
   // Check if elastic
   Real f_trial = computeYieldFunction(stress_trial, kappa_old, 0.0, dt);
   if (f_trial <= TOL) {
+    _yield_function[_qp] = f_trial;
     _return_mapping_stage[_qp] = -1;
     return true;
   }
@@ -687,6 +723,7 @@ OrthotropicPlasticityStressUpdate::performNewtonRaphson(
       delta_kappa = dkappa_i;
       kappa_new = kappa_i;
       damage_new = D_i;
+      _yield_function[_qp] = f;
       _return_mapping_stage[_qp] = 2;
       return true;
     }
@@ -791,6 +828,8 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
   
   // Check yield
   Real f = computeYieldFunction(stress_i, kappa_i, dkappa_i, dt);
+  _yield_function[_qp] = f;
+
   if (f <= TOL) {
     stress_new = stress_i;
     delta_kappa = 0.0;
@@ -1162,6 +1201,7 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
       delta_kappa = dkappa_i;
       kappa_new = kappa_i;
       damage_new = D_i;
+      _yield_function[_qp] = f;
       _return_mapping_stage[_qp] = 4;  // Primal converged
       return true;
     }
@@ -1316,13 +1356,13 @@ OrthotropicPlasticityStressUpdate::computeViscosity(
       break;
     
     case ViscosityMode::EXPONENTIAL:
-      // VISCFL = 2: -log(1 + η/Δt × Δκ/HI)/m
-      visc = -std::log(1.0 + eta_dt * dkappa / HI) / _m;
+      // VISCFL = 2: -(exp(η/Δt × Δκ/HI) - 1)/m
+      visc = -(std::exp(eta_dt * dkappa / HI) - 1.0) / _m;
       break;
     
     case ViscosityMode::LOGARITHMIC:
-      // VISCFL = 3: -(exp(η/Δt × Δκ/HI) - 1)/m
-      visc = -(std::exp(eta_dt * dkappa / HI) - 1.0) / _m;
+      // VISCFL = 3: -log(1 + η/Δt × Δκ/HI)/m
+      visc = -std::log(1.0 + eta_dt * dkappa / HI) / _m;
       break;
     
     case ViscosityMode::POLYNOMIAL:
@@ -1374,17 +1414,17 @@ OrthotropicPlasticityStressUpdate::computeViscosityDerivatives(
     
     case ViscosityMode::EXPONENTIAL:
       {
-        Real factor = eta_dt * dkappa / (_m * HI * HI) / (1.0 + eta_dt * dkappa / HI);
-        dvisc_ds = factor * dHI_ds;
-        dvisc_dk = -(eta_dt / _m) / (HI * (1.0 + eta_dt * dkappa / HI));
+        Real exp_term = std::exp(eta_dt * dkappa / HI);
+        dvisc_ds = (eta_dt * dkappa / (_m * HI * HI)) * dHI_ds * exp_term;
+        dvisc_dk = -(eta_dt / _m) / HI * exp_term;
       }
       break;
     
     case ViscosityMode::LOGARITHMIC:
       {
-        Real exp_term = std::exp(eta_dt * dkappa / HI);
-        dvisc_ds = (eta_dt * dkappa / (_m * HI * HI)) * dHI_ds * exp_term;
-        dvisc_dk = -(eta_dt / _m) / HI * exp_term;
+        Real factor = eta_dt * dkappa / (_m * HI * HI) / (1.0 + eta_dt * dkappa / HI);
+        dvisc_ds = factor * dHI_ds;
+        dvisc_dk = -(eta_dt / _m) / (HI * (1.0 + eta_dt * dkappa / HI));
       }
       break;
     
@@ -1530,7 +1570,7 @@ OrthotropicPlasticityStressUpdate::computeYieldFunction(
   }*/
 
   // Comprehensive diagnostics
-  if (_qp == 0 && (_t_step % 10 == 0 || delta_kappa > 0)) {
+  if (_qp == 0 && (_t_step % 100 == 0 || delta_kappa > 0)) {
     Moose::out << "t=" << _t << " step=" << _t_step 
                << " | σ_xx=" << s[0] << " σ_yy=" << s[1] << " σ_zz=" << s[2]
                << " | σ_yz=" << s[3] << " σ_xz=" << s[4] << " σ_xy=" << s[5]

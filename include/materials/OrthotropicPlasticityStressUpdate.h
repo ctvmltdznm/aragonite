@@ -75,6 +75,11 @@ protected:
 
   // Parameters - Yield (compression, defaults to tension)
   const Real _sigma_xx_compression, _sigma_yy_compression, _sigma_zz_compression;
+  
+  // Yield surface coupling parameter
+  const Real _zeta12;
+  const Real _zeta13;
+  const Real _zeta23;
 
   // Euler angles
   const VariableValue & _euler_angle_1, & _euler_angle_2, & _euler_angle_3;
@@ -137,6 +142,7 @@ protected:
   const MaterialProperty<Real> & _damage_old;
 
   // Diagnostics
+  MaterialProperty<Real> & _yield_function;
   MaterialProperty<Real> & _return_mapping_stage;
   MaterialProperty<Real> & _return_mapping_iterations;
 };
