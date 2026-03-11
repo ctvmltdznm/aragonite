@@ -58,6 +58,13 @@ protected:
   // ==========================================================================
   const Real _exponent_k;   ///< Density exponent (typically 1.8-2.0)
   const Real _exponent_l;   ///< Fabric exponent (typically 1.0)
+  const Real _delta_cortical; ///< Cortical correction factor (UMAT DELTA)
+  
+  // ==========================================================================
+  // HELPER FUNCTIONS
+  // ==========================================================================
+  /// TSFU: Density scaling with cortical correction (UMAT lines 2036-2045)
+  Real computeTSFU(Real rho, Real exponent, Real delta) const;
   
   // ==========================================================================
   // COMPUTED ORTHOTROPIC CONSTANTS (for output/debugging)

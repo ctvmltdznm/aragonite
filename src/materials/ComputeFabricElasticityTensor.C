@@ -53,6 +53,11 @@ ComputeFabricElasticityTensor::validParams()
     "Fabric exponent l. Typical: 1.0. "
     "Higher l = stronger anisotropy from fabric.");
   
+  // Cortical bone correction
+  params.addParam<Real>("delta_cortical", 1.0,
+    "Cortical bone density correction factor (UMAT DELTA). "
+    "Only affects ρ > 0.5. Set to 1.0 to disable.");
+  
   return params;
 }
 
@@ -66,7 +71,8 @@ ComputeFabricElasticityTensor::ComputeFabricElasticityTensor(
     _fabric_m2(getParam<Real>("fabric_m2")),
     _fabric_m3(getParam<Real>("fabric_m3")),
     _exponent_k(getParam<Real>("exponent_k")),
-    _exponent_l(getParam<Real>("exponent_l"))
+    _exponent_l(getParam<Real>("exponent_l")),
+    _delta_cortical(getParam<Real>("delta_cortical"))
 {
   // Compute or read base shear modulus
   if (isParamValid("G_0"))
@@ -94,8 +100,8 @@ ComputeFabricElasticityTensor::ComputeFabricElasticityTensor(
   // COMPUTE ORTHOTROPIC CONSTANTS (Zysset-Curnier 1995)
   // ==========================================================================
   
-  // Density scaling
-  Real rho_k = std::pow(_density_rho, _exponent_k);
+  // Density scaling with cortical correction (TSFU function from UMAT)
+  Real rho_k = computeTSFU(_density_rho, _exponent_k, _delta_cortical);
   
   // Fabric powers
   Real m1_l = std::pow(_fabric_m1, _exponent_l);
@@ -139,7 +145,8 @@ ComputeFabricElasticityTensor::ComputeFabricElasticityTensor(
   Moose::out << "Fabric: m₁=" << _fabric_m1 << " m₂=" << _fabric_m2 
              << " m₃=" << _fabric_m3 << " (sum=" << fabric_sum << ")" << std::endl;
   Moose::out << "Density: ρ=" << _density_rho << " k=" << _exponent_k 
-             << " l=" << _exponent_l << std::endl;
+             << " l=" << _exponent_l << " δ=" << _delta_cortical << std::endl;
+  Moose::out << "TSFU(ρ,k,δ)=" << rho_k << " (effective density scaling)" << std::endl;
   Moose::out << "Computed orthotropic constants:" << std::endl;
   Moose::out << "  E₁=" << _E1 << " E₂=" << _E2 << " E₃=" << _E3 << " MPa" << std::endl;
   Moose::out << "  G₁₂=" << _G12 << " G₁₃=" << _G13 << " G₂₃=" << _G23 << " MPa" << std::endl;
@@ -201,4 +208,28 @@ ComputeFabricElasticityTensor::buildOrthotropicStiffness(
   // symmetric9: C11, C12, C13, C22, C23, C33, C44, C55, C66
   std::vector<Real> Cvals = {C11, C12, C13, C22, C23, C33, C44, C55, C66};
   _elasticity_tensor[_qp].fillFromInputVector(Cvals, RankFourTensor::symmetric9);
+}
+
+Real
+ComputeFabricElasticityTensor::computeTSFU(Real rho, Real exponent, Real delta) const
+{
+  // UMAT lines 2036-2045: TSFU function for density scaling with cortical correction
+  // For ρ ≤ 0.5: simple power law
+  // For ρ > 0.5: adds cortical bone correction term
+  //
+  // TSFU(ρ, p, δ) = ρᵖ                           if ρ ≤ 0.5
+  //               = ρᵖ + (δ-1)((ρ-0.5)/0.5)ᵖ     if ρ > 0.5
+  //
+  // Set δ = 1.0 to disable cortical correction (reduces to simple power law)
+  
+  Real rho_p = std::pow(rho, exponent);
+  
+  if (rho > 0.5 && std::abs(delta - 1.0) > 1e-12)
+  {
+    // Cortical correction for dense bone
+    Real correction = (delta - 1.0) * std::pow((rho - 0.5) / 0.5, exponent);
+    return rho_p + correction;
+  }
+  
+  return rho_p;
 }
