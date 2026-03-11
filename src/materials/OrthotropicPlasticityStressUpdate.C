@@ -23,33 +23,86 @@ OrthotropicPlasticityStressUpdate::validParams()
 {
   InputParameters params = StressUpdateBase::validParams();
   
-  params.addClassDescription("Orthotropic plasticity with UMAT-style implementation");
+  params.addClassDescription("Orthotropic plasticity with UMAT-style implementation. "
+    "Supports both explicit directional strengths and fabric-based orthotropy "
+    "(Schwiedrzik et al. 2013).");
   
+  // ==========================================================================
+  // YIELD INPUT MODE
+  // ==========================================================================
+  params.addParam<bool>("use_fabric_scaling", false,
+    "Enable fabric-based orthotropy (Schwiedrzik et al. 2013). When true, "
+    "directional strengths are computed from base strengths, fabric eigenvalues, "
+    "and density. When false (default), use explicit directional strengths.");
+  
+  // ==========================================================================
+  // EXPLICIT MODE: Direct yield strengths (original interface)
+  // ==========================================================================
   // Yield strengths - Tension
-  params.addRequiredParam<Real>("sigma_xx_tension", "Yield strength in xx direction (tension) [MPa]");
-  params.addRequiredParam<Real>("sigma_yy_tension", "Yield strength in yy direction (tension) [MPa]");
-  params.addRequiredParam<Real>("sigma_zz_tension", "Yield strength in zz direction (tension) [MPa]");
-  params.addRequiredParam<Real>("tau_xy_max", "Maximum shear stress in xy plane [MPa]");
-  params.addRequiredParam<Real>("tau_xz_max", "Maximum shear stress in xz plane [MPa]");
-  params.addRequiredParam<Real>("tau_yz_max", "Maximum shear stress in yz plane [MPa]");
+  params.addParam<Real>("sigma_xx_tension", "Yield strength in xx direction (tension) [MPa]");
+  params.addParam<Real>("sigma_yy_tension", "Yield strength in yy direction (tension) [MPa]");
+  params.addParam<Real>("sigma_zz_tension", "Yield strength in zz direction (tension) [MPa]");
+  params.addParam<Real>("tau_xy_max", "Maximum shear stress in xy plane [MPa]");
+  params.addParam<Real>("tau_xz_max", "Maximum shear stress in xz plane [MPa]");
+  params.addParam<Real>("tau_yz_max", "Maximum shear stress in yz plane [MPa]");
   
   // Yield strengths - Compression (optional, defaults to tension)
   params.addParam<Real>("sigma_xx_compression", "Yield strength in xx direction (compression) [MPa]");
   params.addParam<Real>("sigma_yy_compression", "Yield strength in yy direction (compression) [MPa]");
   params.addParam<Real>("sigma_zz_compression", "Yield strength in zz direction (compression) [MPa]");
   
-  // Yield surface coupling (optional, defaults to 0 = uncoupled)
+  // Yield surface coupling for explicit mode
   params.addParam<Real>("zeta12", 0.0, "X-Y coupling parameter (12 interaction)");
   params.addParam<Real>("zeta13", 0.0, "X-Z coupling parameter (13 interaction)");
-  params.addParam<Real>("zeta23", 0.0, "Y-Z coupling parameter (23 interaction)");  // Euler angles for material orientation
+  params.addParam<Real>("zeta23", 0.0, "Y-Z coupling parameter (23 interaction)");
+
+  // Density scaling for explicit mode
+  params.addParam<Real>("yield_density_exponent", 0.0,
+    "Density exponent for yield scaling in EXPLICIT mode. "
+    "σ_scaled = σ_input × ρ^p. Set to 0 to disable. "
+    "Typical values: 1.5-2.0 for trabecular bone. "
+    "Note: In fabric mode, use 'exponent_p' parameter instead.");
   
-  // Euler angles for material orientation
+  // ==========================================================================
+  // FABRIC MODE: Base strengths + fabric tensor (Schwiedrzik et al. 2013)
+  // ==========================================================================
+  // Base yield strengths (isotropic reference)
+  params.addParam<Real>("sigma_0_tension", 
+    "Base tensile yield strength σ₀⁺ [MPa] (fabric mode)");
+  params.addParam<Real>("sigma_0_compression", 
+    "Base compressive yield strength σ₀⁻ [MPa] (fabric mode). Defaults to sigma_0_tension.");
+  params.addParam<Real>("tau_0", 
+    "Base shear yield strength τ₀ [MPa] (fabric mode)");
+  params.addParam<Real>("zeta_0", 0.22,
+    "Base interaction parameter ζ₀ (fabric mode). Typical: 0.22 for bone.");
+  
+  // Fabric tensor eigenvalues (normalized so m1+m2+m3=3)
+  params.addParam<Real>("fabric_m1", 1.0, 
+    "Fabric tensor eigenvalue m₁ (fabric mode). Normalized: m₁+m₂+m₃=3");
+  params.addParam<Real>("fabric_m2", 1.0, 
+    "Fabric tensor eigenvalue m₂ (fabric mode)");
+  params.addParam<Real>("fabric_m3", 1.0, 
+    "Fabric tensor eigenvalue m₃ (fabric mode)");
+  
+  // Density and exponents
+  params.addParam<Real>("density_rho", 1.0, 
+    "Relative density ρ (BV/TV for bone, 0-1). Set to 1.0 for full density.");
+  params.addParam<Real>("exponent_p", 1.6, 
+    "Density exponent p (fabric mode). Typical: 1.6 for trabecular bone.");
+  params.addParam<Real>("exponent_q", 1.0, 
+    "Fabric exponent q (fabric mode). Typical: 1.0 for trabecular bone.");
+  
+  // Cortical bone correction (UMAT DELTA parameter for ρ > 0.5)
+  params.addParam<Real>("delta_cortical", 1.0,
+    "Cortical bone density correction factor (UMAT DELTA). "
+    "Only affects ρ > 0.5. Set to 1.0 to disable.");
+
+  // ==========================================================================
+  // EULER ANGLES (both modes)
+  // ==========================================================================
   params.addRequiredCoupledVar("euler_angle_1", "First Euler angle (phi1) in degrees");
   params.addRequiredCoupledVar("euler_angle_2", "Second Euler angle (Phi) in degrees");
   params.addRequiredCoupledVar("euler_angle_3", "Third Euler angle (phi2) in degrees");
-  //params.addRequiredParam<Real>("euler_angle_1", "First Euler angle (phi1) in degrees");
-  //params.addRequiredParam<Real>("euler_angle_2", "Second Euler angle (Phi) in degrees");
-  //params.addRequiredParam<Real>("euler_angle_3", "Third Euler angle (phi2) in degrees");
 
   // params.addParam<Real>("kappa_start", 0.002, 
   //                        "Plastic strain at which softening begins");
@@ -103,55 +156,43 @@ OrthotropicPlasticityStressUpdate::validParams()
 OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
     const InputParameters & parameters)
   : StressUpdateBase(parameters),
-    // Yield strengths - tension
-    _sigma_xx_tension(getParam<Real>("sigma_xx_tension")),
-    _sigma_yy_tension(getParam<Real>("sigma_yy_tension")),
-    _sigma_zz_tension(getParam<Real>("sigma_zz_tension")),
-    _tau_xy_max(getParam<Real>("tau_xy_max")),
-    _tau_xz_max(getParam<Real>("tau_xz_max")),
-    _tau_yz_max(getParam<Real>("tau_yz_max")),
+    // Yield input mode
+    _use_fabric_scaling(getParam<bool>("use_fabric_scaling")),
     
-    // Yield strengths - compression (default to tension if not provided)
-    _sigma_xx_compression(isParamValid("sigma_xx_compression") ? 
-                          getParam<Real>("sigma_xx_compression") : _sigma_xx_tension),
-    _sigma_yy_compression(isParamValid("sigma_yy_compression") ? 
-                          getParam<Real>("sigma_yy_compression") : _sigma_yy_tension),
-    _sigma_zz_compression(isParamValid("sigma_zz_compression") ? 
-                          getParam<Real>("sigma_zz_compression") : _sigma_zz_tension),
+    // Initialize yield strengths to zero (will be set in constructor body)
+    _sigma_xx_tension(0.0), _sigma_yy_tension(0.0), _sigma_zz_tension(0.0),
+    _tau_xy_max(0.0), _tau_xz_max(0.0), _tau_yz_max(0.0),
+    _sigma_xx_compression(0.0), _sigma_yy_compression(0.0), _sigma_zz_compression(0.0),
+    _zeta12(0.0), _zeta13(0.0), _zeta23(0.0),
     
-    // Yield surface coupling
-    _zeta12(getParam<Real>("zeta12")),
-    _zeta13(getParam<Real>("zeta12")),
-    _zeta23(getParam<Real>("zeta12")),
+    // Fabric parameters (read if fabric mode, defaults otherwise)
+    _sigma_0_tension(isParamValid("sigma_0_tension") ? getParam<Real>("sigma_0_tension") : 0.0),
+    _sigma_0_compression(isParamValid("sigma_0_compression") ? 
+                         getParam<Real>("sigma_0_compression") : _sigma_0_tension),
+    _tau_0(isParamValid("tau_0") ? getParam<Real>("tau_0") : 0.0),
+    _zeta_0(getParam<Real>("zeta_0")),
+    _fabric_m1(getParam<Real>("fabric_m1")),
+    _fabric_m2(getParam<Real>("fabric_m2")),
+    _fabric_m3(getParam<Real>("fabric_m3")),
+    _density_rho(getParam<Real>("density_rho")),
+    _exponent_p(getParam<Real>("exponent_p")),
+    _exponent_q(getParam<Real>("exponent_q")),
+    _delta_cortical(getParam<Real>("delta_cortical")),
+    _yield_density_exponent(getParam<Real>("yield_density_exponent")),
     
     // Euler angles
     _euler_angle_1(coupledValue("euler_angle_1")),
     _euler_angle_2(coupledValue("euler_angle_2")),
     _euler_angle_3(coupledValue("euler_angle_3")),
-    //_euler_angle_1(getParam<Real>("euler_angle_1")),
-    //_euler_angle_2(getParam<Real>("euler_angle_2")),
-    //_euler_angle_3(getParam<Real>("euler_angle_3")),
-    
-    // Softening
-    //_softening_exponent(getParam<Real>("softening_exponent")),
-    //_residual_strength_ratio(getParam<Real>("residual_strength_ratio")),
-    //_max_plastic_strain(getParam<Real>("max_plastic_strain")),
 
     // Softening configuration
-    //_softening_type(getParam<std::string>("softening_type")),
-    //_kappa_start(getParam<Real>("kappa_start")),
-    //_softening_range(getParam<Real>("softening_range")),
-
-    // Plastic flow
     _residual_strength(getParam<Real>("residual_strength")),
     _kslope(getParam<Real>("kslope")),
     _kmax(getParam<Real>("kmax")),
     _kmin(getParam<Real>("kmin")),
     
     // Viscoplasticity
-    //_use_viscoplasticity(getParam<bool>("use_viscoplasticity")),
     _eta(getParam<Real>("eta")),
-    // viscosity exponent
     _m(getParam<Real>("m")),
     
     // Damage
@@ -180,6 +221,149 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
     _return_mapping_stage(declareProperty<Real>("return_mapping_stage")),
     _return_mapping_iterations(declareProperty<Real>("return_mapping_iterations"))
 {
+  // ==========================================================================
+  // COMPUTE EFFECTIVE YIELD PARAMETERS
+  // ==========================================================================
+  
+  if (_use_fabric_scaling)
+  {
+    // ========================================================================
+    // FABRIC-BASED MODE (Schwiedrzik et al. 2013, Section 2.3)
+    // ========================================================================
+    
+    // Validate fabric parameters
+    if (!isParamValid("sigma_0_tension"))
+      mooseError("Fabric mode requires 'sigma_0_tension' parameter");
+    if (!isParamValid("tau_0"))
+      mooseError("Fabric mode requires 'tau_0' parameter");
+    
+    // Check fabric tensor normalization (m1 + m2 + m3 should = 3)
+    Real fabric_sum = _fabric_m1 + _fabric_m2 + _fabric_m3;
+    if (std::abs(fabric_sum - 3.0) > 0.01)
+      mooseWarning("Fabric eigenvalues should sum to 3.0, got ", fabric_sum, 
+                   ". Consider normalizing.");
+    
+    // Compute density scaling: TSFU(ρ, p, δ)
+    Real rho_p = computeTSFU(_density_rho, _exponent_p, _delta_cortical);
+    
+    // Fabric eigenvalue powers
+    Real m1_2q = std::pow(_fabric_m1, 2.0 * _exponent_q);
+    Real m2_2q = std::pow(_fabric_m2, 2.0 * _exponent_q);
+    Real m3_2q = std::pow(_fabric_m3, 2.0 * _exponent_q);
+    Real m1_q = std::pow(_fabric_m1, _exponent_q);
+    Real m2_q = std::pow(_fabric_m2, _exponent_q);
+    Real m3_q = std::pow(_fabric_m3, _exponent_q);
+    
+    // Directional yield strengths (Eq. 43 in paper)
+    // σ⁺ᵢᵢ = σ⁺₀ · ρᵖ · mᵢ^(2q)
+    _sigma_xx_tension = _sigma_0_tension * rho_p * m1_2q;
+    _sigma_yy_tension = _sigma_0_tension * rho_p * m2_2q;
+    _sigma_zz_tension = _sigma_0_tension * rho_p * m3_2q;
+    
+    _sigma_xx_compression = _sigma_0_compression * rho_p * m1_2q;
+    _sigma_yy_compression = _sigma_0_compression * rho_p * m2_2q;
+    _sigma_zz_compression = _sigma_0_compression * rho_p * m3_2q;
+    
+    // Shear yield strengths: τᵢⱼ = τ₀ · ρᵖ · mᵢ^q · mⱼ^q
+    _tau_xy_max = _tau_0 * rho_p * m1_q * m2_q;  // 12 plane
+    _tau_xz_max = _tau_0 * rho_p * m1_q * m3_q;  // 13 plane  
+    _tau_yz_max = _tau_0 * rho_p * m2_q * m3_q;  // 23 plane
+    
+    // Interaction parameters scaled by fabric (Eq. 44)
+    // ζᵢⱼ = ζ₀ · (mᵢ/mⱼ)^(2q)
+    _zeta12 = _zeta_0 * std::pow(_fabric_m1 / _fabric_m2, 2.0 * _exponent_q);
+    _zeta13 = _zeta_0 * std::pow(_fabric_m1 / _fabric_m3, 2.0 * _exponent_q);
+    _zeta23 = _zeta_0 * std::pow(_fabric_m2 / _fabric_m3, 2.0 * _exponent_q);
+    
+    // Report computed values
+    Moose::out << "\n=== FABRIC-BASED YIELD PARAMETERS (Schwiedrzik et al. 2013) ===\n";
+    Moose::out << "Input: σ₀⁺=" << _sigma_0_tension << " σ₀⁻=" << _sigma_0_compression 
+               << " τ₀=" << _tau_0 << " ζ₀=" << _zeta_0 << "\n";
+    Moose::out << "Fabric: m₁=" << _fabric_m1 << " m₂=" << _fabric_m2 
+               << " m₃=" << _fabric_m3 << " (sum=" << fabric_sum << ")\n";
+    Moose::out << "Density: ρ=" << _density_rho << " p=" << _exponent_p 
+               << " q=" << _exponent_q << " δ=" << _delta_cortical << "\n";
+    Moose::out << "Computed strengths:\n";
+    Moose::out << "  σ_xx: +" << _sigma_xx_tension << " / -" << _sigma_xx_compression << "\n";
+    Moose::out << "  σ_yy: +" << _sigma_yy_tension << " / -" << _sigma_yy_compression << "\n";
+    Moose::out << "  σ_zz: +" << _sigma_zz_tension << " / -" << _sigma_zz_compression << "\n";
+    Moose::out << "  τ_xy=" << _tau_xy_max << " τ_xz=" << _tau_xz_max 
+               << " τ_yz=" << _tau_yz_max << "\n";
+    Moose::out << "  ζ₁₂=" << _zeta12 << " ζ₁₃=" << _zeta13 << " ζ₂₃=" << _zeta23 << "\n";
+    Moose::out << "===============================================================\n\n";
+  }
+  else
+  {
+    // ========================================================================
+    // EXPLICIT MODE (original interface - backward compatible)
+    // ========================================================================
+    // Validate that explicit parameters are provided
+    if (!isParamValid("sigma_xx_tension"))
+      mooseError("Explicit mode requires 'sigma_xx_tension' parameter. "
+                 "Set 'use_fabric_scaling = true' for fabric-based mode.");
+    if (!isParamValid("sigma_yy_tension"))
+      mooseError("Explicit mode requires 'sigma_yy_tension' parameter");
+    if (!isParamValid("sigma_zz_tension"))
+      mooseError("Explicit mode requires 'sigma_zz_tension' parameter");
+    if (!isParamValid("tau_xy_max"))
+      mooseError("Explicit mode requires 'tau_xy_max' parameter");
+    if (!isParamValid("tau_xz_max"))
+      mooseError("Explicit mode requires 'tau_xz_max' parameter");
+    if (!isParamValid("tau_yz_max"))
+      mooseError("Explicit mode requires 'tau_yz_max' parameter");
+
+    // Read explicit yield strengths
+    _sigma_xx_tension = getParam<Real>("sigma_xx_tension");
+    _sigma_yy_tension = getParam<Real>("sigma_yy_tension");
+    _sigma_zz_tension = getParam<Real>("sigma_zz_tension");
+    _tau_xy_max = getParam<Real>("tau_xy_max");
+    _tau_xz_max = getParam<Real>("tau_xz_max");
+    _tau_yz_max = getParam<Real>("tau_yz_max");
+
+    // Compression strengths (default to tension if not provided)
+    _sigma_xx_compression = isParamValid("sigma_xx_compression") ? 
+                            getParam<Real>("sigma_xx_compression") : _sigma_xx_tension;
+    _sigma_yy_compression = isParamValid("sigma_yy_compression") ? 
+                            getParam<Real>("sigma_yy_compression") : _sigma_yy_tension;
+    _sigma_zz_compression = isParamValid("sigma_zz_compression") ? 
+                            getParam<Real>("sigma_zz_compression") : _sigma_zz_tension;
+
+    // Yield surface coupling (explicit values)
+    _zeta12 = getParam<Real>("zeta12");
+    _zeta13 = getParam<Real>("zeta13");
+    _zeta23 = getParam<Real>("zeta23");
+
+    // ========================================================================
+    // OPTIONAL DENSITY SCALING FOR EXPLICIT MODE
+    // ========================================================================
+    if (_yield_density_exponent > 0.0 && _density_rho < 1.0)
+    {
+      Real rho_p = std::pow(_density_rho, _yield_density_exponent);
+      
+      // Scale all yield strengths by ρ^p
+      _sigma_xx_tension *= rho_p;
+      _sigma_yy_tension *= rho_p;
+      _sigma_zz_tension *= rho_p;
+      _sigma_xx_compression *= rho_p;
+      _sigma_yy_compression *= rho_p;
+      _sigma_zz_compression *= rho_p;
+      _tau_xy_max *= rho_p;
+      _tau_xz_max *= rho_p;
+      _tau_yz_max *= rho_p;
+  
+      Moose::out << "\n=== DENSITY-SCALED EXPLICIT YIELD PARAMETERS ===" << std::endl;
+      Moose::out << "Relative density: ρ = " << _density_rho << std::endl;
+      Moose::out << "Yield exponent: p = " << _yield_density_exponent << std::endl;
+      Moose::out << "Scale factor: ρ^p = " << rho_p << std::endl;
+      Moose::out << "Scaled yield strengths:" << std::endl;
+      Moose::out << "  σ_xx: +" << _sigma_xx_tension << " / -" << _sigma_xx_compression << " MPa" << std::endl;
+      Moose::out << "  σ_yy: +" << _sigma_yy_tension << " / -" << _sigma_yy_compression << " MPa" << std::endl;
+      Moose::out << "  σ_zz: +" << _sigma_zz_tension << " / -" << _sigma_zz_compression << " MPa" << std::endl;
+      Moose::out << "  τ_xy=" << _tau_xy_max << " τ_xz=" << _tau_xz_max 
+                 << " τ_yz=" << _tau_yz_max << " MPa" << std::endl;
+      Moose::out << "=================================================\n" << std::endl;
+    }
+  }
   // Parse post-yield mode
   MooseEnum mode = getParam<MooseEnum>("postyield_mode");
   if (mode == "perfect")
@@ -1623,4 +1807,33 @@ OrthotropicPlasticityStressUpdate::computeYieldGradient(const RankTwoTensor & st
   grad_tensor(0,1) = grad_tensor(1,0) = grad[5];
   
   return grad_tensor;
+}
+
+// ============================================================================
+// TSFU: Tissue Function for Density Scaling (UMAT lines 2036-2045)
+// ============================================================================
+// Computes ρ^exp with optional cortical bone correction for ρ > 0.5
+// TSFU(ρ, exp, δ) = ρ^exp                                      if ρ ≤ 0.5
+//                 = ρ^exp + (δ-1) * ((ρ-0.5)/0.5)^exp          if ρ > 0.5
+// Setting δ = 1.0 disables the cortical correction.
+// ============================================================================
+Real
+OrthotropicPlasticityStressUpdate::computeTSFU(Real rho, Real exponent, Real delta) const
+{
+  if (rho <= 0.0)
+    return 0.0;
+  
+  if (rho <= 0.5)
+  {
+    // Standard power law scaling
+    return std::pow(rho, exponent);
+  }
+  else
+  {
+    // Cortical bone correction (UMAT line 2042)
+    // For dense bone (ρ > 0.5), add correction term
+    Real base = std::pow(rho, exponent);
+    Real correction = (delta - 1.0) * std::pow((rho - 0.5) / 0.5, exponent);
+    return base + correction;
+  }
 }

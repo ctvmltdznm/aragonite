@@ -1,5 +1,7 @@
 // CORRECTED Orthotropic Plasticity - UMAT Style (Unnormalized)
 // CRITICAL FIX: f = sqrt(σ:F:σ) + f_lin·σ - r(κ)*σ_0 (NOT sqrt of sum!)
+// Supports both explicit strengths and fabric-based orthotropy (Schwiedrzik et al. 2013)
+// Now with optional density scaling for explicit mode
 
 #pragma once
 #include "StressUpdateBase.h"
@@ -69,23 +71,45 @@ protected:
                        Real & delta_kappa, Real & kappa_new, Real & damage_new,
                        unsigned int & iterations);
 
-  // Parameters - Yield (tension)
-  const Real _sigma_xx_tension, _sigma_yy_tension, _sigma_zz_tension;
-  const Real _tau_xy_max, _tau_xz_max, _tau_yz_max;
+  // Helper: UMAT TSFU function for density scaling with cortical correction
+  Real computeTSFU(Real rho, Real exponent, Real delta) const;
 
-  // Parameters - Yield (compression, defaults to tension)
-  const Real _sigma_xx_compression, _sigma_yy_compression, _sigma_zz_compression;
+  // ==========================================================================
+  // YIELD INPUT MODE
+  // ==========================================================================
+  const bool _use_fabric_scaling;
+
+  // ==========================================================================
+  // EFFECTIVE YIELD PARAMETERS (computed from either mode)
+  // ==========================================================================
+  // Yield strengths - tension (non-const: computed in constructor for fabric mode)
+  Real _sigma_xx_tension, _sigma_yy_tension, _sigma_zz_tension;
+  Real _tau_xy_max, _tau_xz_max, _tau_yz_max;
+
+  // Yield strengths - compression
+  Real _sigma_xx_compression, _sigma_yy_compression, _sigma_zz_compression;
   
-  // Yield surface coupling parameter
-  const Real _zeta12;
-  const Real _zeta13;
-  const Real _zeta23;
+  // Yield surface coupling parameters (may be fabric-scaled)
+  Real _zeta12, _zeta13, _zeta23;
 
-  // Euler angles
+  // ==========================================================================
+  // FABRIC MODE PARAMETERS (Schwiedrzik et al. 2013)
+  // ==========================================================================
+  Real _sigma_0_tension, _sigma_0_compression, _tau_0, _zeta_0;
+  Real _fabric_m1, _fabric_m2, _fabric_m3;
+  Real _density_rho, _exponent_p, _exponent_q, _delta_cortical;
+
+  // ==========================================================================
+  // EXPLICIT MODE DENSITY SCALING (optional)
+  // ==========================================================================
+  Real _yield_density_exponent;  // Density exponent for explicit mode: σ = σ_input × ρ^p
+
+  // ==========================================================================
+  // ORIENTATION
+  // ==========================================================================
   const VariableValue & _euler_angle_1, & _euler_angle_2, & _euler_angle_3;
-  //const Real _euler_angle_1, _euler_angle_2, _euler_angle_3;
 
-  // Quadric yield surface
+  // Quadric yield surface (built from effective parameters)
   std::vector<std::vector<Real>> _F_matrix;  // 6×6
   std::vector<Real> _f_lin_vector;           // 6×1 linear term
 
@@ -128,7 +152,7 @@ protected:
   const Real _damage_critical, _damage_rate;
 
   // Numerical
-  const Real _absolute_tolerance;  // Dimensionless (yield function is normalized!)
+  const Real _absolute_tolerance;
   const unsigned int _max_iterations_newton, _max_iterations_primal;
   const bool _use_primal_cpp;
   const Real _line_search_beta, _line_search_eta;
