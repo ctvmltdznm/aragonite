@@ -1,7 +1,8 @@
 # Orthotropic Plasticity Model for Aragonite Crystals
 
-A multiscale finite element framework for modeling coral aragonite biomechanics, implemented in the [MOOSE](https://mooseframework.inl.gov/) framework.
+A multiscale finite element framework for modeling coral aragonite biomechanics and trabecular bone, implemented in the [MOOSE](https://mooseframework.inl.gov/) framework.
 
+[![License: LGPL](https://img.shields.io/badge/License-LGPL-blue.svg)](https://opensource.org/licenses/LGPL-2.1)
 <!-- Add after Zenodo upload: -->
 <!-- [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXX) -->
 
@@ -11,21 +12,38 @@ For more information see: [https://mooseframework.inl.gov/getting_started/new_us
 
 ## Overview
 
-This framework bridges molecular dynamics (MD) simulations to continuum finite element analysis (FEA) for modelling coral aragonite biomechanics. Key features:
+This framework bridges molecular dynamics (MD) simulations to continuum finite element analysis (FEA) for modelling porous biominerals and biological composites. Key features:
 
+- **Three modeling paradigms:**
+  - Explicit orthotropic (dense crystalline materials: aragonite, minerals)
+  - Porosity-scaled orthotropic (porous materials with known full-density properties)
+  - Fabric tensor-based (trabecular bone, foam-like structures with μCT-derived anisotropy)
+ 
 - **Orthotropic plasticity** with quadric yield surface (Schwiedrzik formulation)
 - **Tension-compression asymmetry** via linear term in yield function
 - **Five post-yield evolution modes**: perfect plasticity, exponential/linear hardening, exponential/piecewise softening
+- **Density-fabric scaling** for trabecular bone (Zysset-Curnier elasticity, Schwiedrzik plasticity)
 - **Homogenized cohesive zone model (CZM)** for grain boundary interfaces with MD-derived parameters
 - **Euler angle-based orientation** for polycrystalline representative volume elements (RVEs)
 
-## Physical System
+## Physical Systems
+
+### Primary: Coral Aragonite Biomechanics
 
 Hierarchical coral biomineral structure:
-- **Sclerodermites** (grains) containing aragonite needle crystals
-- **Interfaces**: Protein-water layers between needles (CZ1) and between grains (CZ2)
-- **MD data**: Interfaces are 22–49× weaker than bulk aragonite
+- **Dense aragonite needles:** Orthotropic single crystals / 'dry' grains
+- **Porous sclerodermites:** Aragonite aggregates with varying porosity
+- **Interfaces:** Protein-water layers between needles (CZ1) and between grains (CZ2)
+- **MD data:** Interfaces are 22–49× weaker than bulk aragonite
 
+### Secondary: Trabecular Bone Mechanics
+ 
+Skeletal tissue modeling:
+- **Base tissue properties:** E₀ = 10–20 GPa, ν₀ = 0.3
+- **Fabric tensor:** From μCT analysis (structural anisotropy)
+- **Apparent properties:** Density-fabric scaled constants at continuum level
+- **Applications:** Vertebral bodies, femoral heads, bone quality assessment
+ 
 ## Installation
 
 ### Prerequisites
@@ -73,27 +91,166 @@ paraview x_tension_out.e
 
 ### Complete Validation Suite
 
+**21 tests across 6 categories:**
+
+| Category | Tests | Purpose |
+|----------|-------|---------|
+| **Orthotropic** | 6 | Elastic constants (E₁, E₂, E₃, G₁₂, G₁₃, G₂₃) and yield stresses |
+| **Asymmetry** | 2 | Tension-compression asymmetry (σ_c ≠ σ_t) |
+| **Post-yield** | 5 | Five r(κ) evolution modes |
+| **Grains** | 3-4 | Multi-grain orientation effects |
+| **CZM** | 4 | Interface failure (Mode I, II, mixed, cycling) |
+| **RVE** | 2 | Complete multiscale framework |
+
 ```bash
 cd scripts
 
 # After cloning, make the validation scripts executable:
-chmod +x *.sh
-chmod +x *.py
+chmod +x *.sh *.py
+
+# Quick validation, specific category
+cd scripts
+./run_validation.sh -c ortho
 
 # Run all 21 validation tests
 ./run_validation.sh
 
-# Generate comparison plots
-./plot_validation.sh
+# Parallel execution
+./run_validation.sh -p 4
 
-# View plots
-cd ../test/validation/figures
-ls *.png
+# List available tests
+./run_validation.sh --list
 ```
 
-## Usage
+**Test passes if:**
+- Shows `[PASS] Output matches gold file`
+- Segfaults during cleanup are harmless
 
-### Example: Polycrystalline RVE
+**Generate validation plots:**
+```bash
+cd scripts
+./plot_validation.sh          # Generate all plots
+./plot_validation.sh -c ortho # Plot specific category
+```
+
+**Output:** Figures saved to `test/validation/figures/`
+- `ortho.png` - All 6 orthotropic directions on one panel
+- `asymmetry.png` - Tension-compression asymmetry + biaxial loading
+- `postyield.png` - All 5 post-yield evolution modes on one panel
+- `grains.png` - Multi-grain orientation effects (solid=Grain 1, dashed=Grain 2)
+- `czm.png` - All 4 CZM modes (Mode I/II/mixed/complete separation)
+
+## Usage Examples
+### Example 1: Explicit Orthotropic (Dense Aragonite)
+ 
+For dense crystalline materials with measured orthotropic constants:
+ 
+```bash
+[Materials]
+  [elasticity]
+    type = ComputeElasticityTensorCoupled
+    C_ijkl = '171800 57500 30200 106700 46900 84200 42100 31100 46600'
+    fill_method = symmetric9
+    coupled_euler_angle_1 = euler_phi1
+    coupled_euler_angle_2 = euler_Phi
+    coupled_euler_angle_3 = euler_phi2
+  []
+  
+  [plasticity]
+    type = OrthotropicPlasticityStressUpdate
+    use_fabric_scaling = false  # Explicit mode
+    
+    # Yield strengths (MPa)
+    sigma_xx_tension = 4980
+    sigma_yy_tension = 4100
+    sigma_zz_tension = 5340
+    tau_xy_max = 4510
+    tau_xz_max = 5080
+    tau_yz_max = 5060
+    
+    # Post-yield behavior
+    postyield_mode = 'exp_softening'
+    residual_strength = 0.7
+    kmin = 0.002
+    kslope = 100.0
+  []
+[]
+```
+ 
+### Example 2: Porosity-Scaled Orthotropic (Porous Coral)
+ 
+For porous materials with known full-density constants:
+ 
+```bash
+[Materials]
+  [elasticity]
+    type = ComputeElasticityTensorCoupled
+    C_ijkl = '171800 57500 30200 106700 46900 84200 42100 31100 46600'
+    fill_method = symmetric9
+    density_rho = 0.85                   # 85% density
+    elasticity_density_exponent = 2.0    # Gibson-Ashby scaling
+    coupled_euler_angle_1 = euler_phi1
+    coupled_euler_angle_2 = euler_Phi
+    coupled_euler_angle_3 = euler_phi2
+  []
+  
+  [plasticity]
+    type = OrthotropicPlasticityStressUpdate
+    use_fabric_scaling = false
+    sigma_xx_tension = 4980
+    # ... (all yield strengths)
+    density_rho = 0.85
+    yield_density_exponent = 1.8
+  []
+[]
+```
+ 
+### Example 3: Fabric-Based (Trabecular Bone)
+ 
+For trabecular structures with fabric tensor from μCT:
+ 
+```bash
+[Materials]
+  [elasticity]
+    type = ComputeFabricElasticityTensor
+    E_0 = 10000.0          # Base tissue modulus [MPa]
+    nu_0 = 0.3             # Base Poisson ratio
+    fabric_m1 = 1.1        # Fabric eigenvalues (sum = 3)
+    fabric_m2 = 1.0
+    fabric_m3 = 0.9
+    density_rho = 0.2      # BV/TV from μCT
+    exponent_k = 2.0       # Elasticity density exponent
+    exponent_l = 1.0       # Fabric exponent
+  []
+  
+  [plasticity]
+    type = OrthotropicPlasticityStressUpdate
+    use_fabric_scaling = true  # Fabric mode
+    
+    # Base tissue yield strengths [MPa]
+    sigma_0_tension = 74.589
+    sigma_0_compression = 111.724
+    tau_0 = 47.33
+    zeta_0 = 0.22
+    
+    # Fabric tensor (must match elasticity)
+    fabric_m1 = 1.1
+    fabric_m2 = 1.0
+    fabric_m3 = 0.9
+    
+    # Density and exponents
+    density_rho = 0.2
+    exponent_p = 1.686     # Yield density exponent
+    exponent_q = 1.02      # Yield fabric exponent
+    
+    # Post-yield behavior
+    postyield_mode = 'exp_softening'
+    residual_strength = 0.7
+  []
+[]
+```
+
+### Example 4: Polycrystalline RVE
 
 ```bash
 [Mesh]
@@ -146,63 +303,13 @@ ls *.png
     kslope = 100.0
   []
 []
-
 ...
 
 # Run simulation
-aragonite-opt -i polycrystal_10grain.i
+aragonite-opt -i input_file_name.i
 ```
 
-## Validation Test Suite
-
-**21 tests across 6 categories:**
-
-| Category | Tests | Purpose |
-|----------|-------|---------|
-| **Orthotropic** | 6 | Elastic constants (E₁, E₂, E₃, G₁₂, G₁₃, G₂₃) and yield stresses |
-| **Asymmetry** | 2 | Tension-compression asymmetry (σ_c ≠ σ_t) |
-| **Post-yield** | 5 | Five r(κ) evolution modes |
-| **Grains** | 3-4 | Multi-grain orientation effects |
-| **CZM** | 4 | Interface failure (Mode I, II, mixed, cycling) |
-| **RVE** | 2 | Complete multiscale framework |
-
-**Run validation:**
-```bash
-# Quick validation, specific category
-cd scripts
-./run_validation.sh -c ortho
-
-# All tests
-./run_validation.sh
-
-# Parallel execution
-./run_validation.sh -p 4
-
-# List available tests
-./run_validation.sh --list
-```
-
-**Test passes if:**
-- Shows `[PASS] Output matches gold file`
-- Segfaults during cleanup are harmless
-
-**Generate validation plots:**
-```bash
-cd scripts
-./plot_validation.sh          # Generate all plots
-./plot_validation.sh -c ortho # Plot specific category
-```
-
-**Output:** Figures saved to `test/validation/figures/`
-- `ortho.png` - All 6 orthotropic directions on one panel
-- `asymmetry.png` - Tension-compression asymmetry + biaxial loading
-- `postyield.png` - All 5 post-yield evolution modes on one panel
-- `grains.png` - Multi-grain orientation effects (solid=Grain 1, dashed=Grain 2)
-- `czm.png` - All 4 CZM modes (Mode I/II/mixed/complete separation)
-
-
-
-### RVE Tests (Validation vs Production)
+### NOTE on RVE Tests (Validation vs Production)
 
 The `rve/dry` and `rve/grain_interfaces` tests use **SHORT RUNS** for validation:
 
@@ -238,27 +345,28 @@ end_time = 100.0  # Or higher for more deformation
 - Complete plastic deformation in all grains
 - Interface debonding and failure (if CZM enabled)
 - Realistic polycrystal stress-strain curves
-- Publication-quality results
 
-**Note:** Validation gold files reflect SHORT RUN (elastic only). 
-Production results will differ (plastic regime).
+**Note:** Validation gold files reflect SHORT RUN (elastic only). Production results will differ (plastic regime).
 
 ## Documentation
 
 Complete technical documentation: [`doc/aragonite_plasticity_documentation.pdf`](doc/aragonite_plasticity_documentation.pdf)
 
 **Contents:**
-- Chapter 1: Introduction and physical system
-- Chapter 2: Mathematical formulation (yield surface, return mapping)
-- Chapter 3: CZM formulation
-- Chapters 4&5: MOOSE installation and building
-- Chapter 6: Input file parameter reference
-- Chapter 7: Troubleshooting most common issues
-- Chapter 9: Summary
+- **Chapter 1:** Introduction and physical system
+- **Chapter 2:** Mathematical formulation (yield surface, fabric tensor theory, return mapping)
+- **Chapter 3:** Cohesive zone model formulation
+- **Chapters 4 & 5:** MOOSE installation and building your application
+- **Chapter 6:** Complete parameter reference (explicit + fabric modes)
+- **Chapter 7:** Validation workflow and examples
+- **Chapter 8:** Troubleshooting common issues
+- **Chapter 9:** Summary
 
 ## Material Parameters
 
-**Aragonite elastic constants (from MD):**
+### Aragonite (Dense Crystal)
+
+**Aragonite elastic constants:**
 - E₁ = 140.4 GPa, E₂ = 70.3 GPa, E₃ = 113.3 GPa
 - G₁₂ = 46.6 GPa, G₁₃ = 46.9 GPa, G₂₃ = 42.1 GPa
 - ν₁₂ = 0.31, ν₁₃ = 0.30, ν₂₃ = 0.39
@@ -268,17 +376,70 @@ Complete technical documentation: [`doc/aragonite_plasticity_documentation.pdf`]
 - Compression: σ₁ = 3900 MPa, σ₂ = 3100 MPa, σ₃ = 4200 MPa
 - Shear: τ₁₂ = 4510 MPa, τ₁₃ = 5080 MPa, τ₂₃ = 5060 MPa
 
+### Trabecular Bone (Fabric-Based)
+
+**Base tissue properties:**
+- E₀ = 10000–20000 MPa
+- ν₀ = 0.3
+- σ₀⁺ = 32–75 MPa (Rincón-Kohli vs Wolfram)
+- σ₀⁻ = 48–112 MPa
+
+**Scaling exponents:**
+- Elasticity: k = 2.0, l = 1.0
+- Plasticity: p = 1.28–1.69, q = 0.5–1.5
+
+**References:** [Wolfram et al. (2012)](https://doi.org/10.1016/j.jmbbm.2012.07.005), [Rincón-Kohli & Zysset (2009)](https://doi.org/10.1007/s10237-008-0128-z), [Zysset & Curnier (1995)](https://doi.org/10.1016/0167-6636(95)00018-6), [Schwiedrzik et al. (2013)](https://doi.org/10.1007/s10237-013-0472-5).
+
+## Implementation Details
+
+### Key Materials
+
+| Material | Purpose | Model |
+|----------|---------|-------|
+| `ComputeElasticityTensorCoupled` | Explicit orthotropic elasticity | Euler angle rotation |
+| `ComputeFabricElasticityTensor` | Fabric-based elasticity | Zysset-Curnier (1995) |
+| `OrthotropicPlasticityStressUpdate` | Anisotropic plasticity | Quadric yield surface |
+| `HomogenizedExponentialCZM` | Dual-exponential CZM | MD-derived parameters |
+
+### Validation Features
+
+- ✅ All 6 orthotropic elastic moduli validated against analytical solutions
+- ✅ Tension-compression asymmetry verified with biaxial tests
+- ✅ Five post-yield evolution modes tested independently
+- ✅ Multi-grain load redistribution demonstrated (elastic unloading in fixed grain)
+- ✅ CZM Mode I/II/mixed validated against MD traction-separation curves
+- ✅ Complete RVE framework with grain boundaries and interfaces
+
 ## Project Structure
 
 ```
 aragonite/
-├── include/materials/    # Header files (.h)
-├── src/materials/        # Implementation (.C)
-├── test/validation/      # Validation test suite
-├── scripts/              # Helper scripts
-├── examples/             # Example input files
-├── doc/                  # LaTeX documentation
-└── Makefile              # Build system
+├── include/
+│   ├── base/                # Application base
+│   └── materials/           # Material headers (.h)
+├── src/
+│   ├── base/                # Application implementation
+│   ├── main.C               # Main entry point
+│   └── materials/           # Material implementation (.C)
+├── test/
+│   └── validation/          # Validation test suite
+│       ├── ortho/           # 6 tests
+│       ├── asymmetry/       # 2 tests
+│       ├── postyield/       # 5 tests
+│       ├── grains/          # 4 tests
+│       ├── czm/             # 4 tests
+│       ├── rve/             # 2 tests
+│       └── figures/         # Generated plots
+├── scripts/
+│   ├── run_validation.sh    # Run test suite
+│   ├── plot_validation.sh   # Generate plots
+│   ├── plot_validation_category.py
+│   └── compare_with_gold.py
+├── doc/
+│   └── aragonite_plasticity_documentation.pdf
+├── Makefile                 # Build system
+├── LICENSE                  # LGPL license
+└── README.md                # This file
 ```
 
 ## Citation
@@ -300,7 +461,8 @@ If you use this software in your research, please cite:
 
 ## License
 
-This project is licensed under the GNU Library Public License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU Library General Public License v2.1 - see the [LICENSE](LICENSE) file for details.
+
 
 ---
 
