@@ -668,9 +668,71 @@ OrthotropicPlasticityStressUpdate::updateState(
   _damage[_qp] = damage_new;
   _return_mapping_iterations[_qp] = iterations;
   
-  // Tangent operator (elastic for now - could add consistent tangent)
-  if (compute_full_tangent_operator)
-    tangent_operator = elasticity_tensor;
+  // Consistent elastoplastic tangent (UMAT lines 1840-1848, Sherman-Morrison)
+  //
+  // Elastic step:  C_ep = C  (exact)
+  // Plastic step:  C_ep = SSSA - (SSSA·dRRdk ⊗ SSSA·NP)
+  //                               / (NP·SSSA·dRRdk + dYdk/||dYds||)
+  //   where SSSA = inv(-dRR/dS) = inv( C_inv/(1-D) + dkappa·dNP/dS )
+  //         NP   = yield gradient direction at converged stress
+  //         dRRdk = -NP  (residual derivative w.r.t. kappa, elastic-only damage)
+  //         dYdk  = dr/dkappa  (hardening/softening slope)
+  //
+  // All quantities are in material frame; rotate C_ep back to global at end.
+  if (compute_full_tangent_operator) {
+    if (delta_kappa <= 0.0) {
+      // Elastic step — tangent is exactly C (already in global frame)
+      tangent_operator = elasticity_tensor;
+    } else {
+      // Plastic step — compute consistent tangent in material frame
+      // DSY_final, HI_final, NP_final already computed above
+      Real dr_new = computeSofteningDerivative(kappa_new);
+      Real D_new  = damage_new;
+
+      // Yield Hessian and gradient-of-gradient-direction
+      RankFourTensor DDSY_final  = computeYieldHessian(stress_return);
+      RankTwoTensor  DHDS_final  = (DDSY_final * DSY_final) / HI_final;
+
+      // DYDS = yield gradient (rate-independent → no viscous correction)
+      // DYDK = dr/dkappa
+      RankTwoTensor  DYDS_final  = DSY_final;
+      Real           DYDK_final  = dr_new;
+
+      // dNP/dS = (DDSY·HI - DSY⊗DHDS) / HI^2
+      RankFourTensor DNPDS_final = (DDSY_final * HI_final
+                                  - dyadicProduct(DSY_final, DHDS_final))
+                                  / (HI_final * HI_final);
+
+      // dRR/dS = -C_inv/(1-D) - dkappa·dNP/dS
+      RankFourTensor DRRDS_final = -C_inv_material / (1.0 - D_new)
+                                 - DNPDS_final * delta_kappa;
+
+      // dRR/dk = -NP  (damage contribution omitted — negligible for small damage)
+      RankTwoTensor  DRRDK_final = -NP_final;
+
+      // SSSA = inv(-dRR/dS)
+      RankFourTensor SSSA = (-DRRDS_final).invSymm();
+
+      // Sherman-Morrison rank-1 update
+      Real DYDS_norm = DYDS_final.L2norm();
+      if (DYDS_norm < 1e-14) DYDS_norm = 1e-14;
+
+      RankTwoTensor SSSA_dRRdk = SSSA * DRRDK_final;
+      RankTwoTensor SSSA_NP    = SSSA * NP_final;
+      Real denom = (NP_final * SSSA_dRRdk).trace()
+                 + DYDK_final / DYDS_norm;
+
+      RankFourTensor C_ep_material;
+      if (std::abs(denom) > 1e-14)
+        C_ep_material = SSSA
+                      - dyadicProduct(SSSA_dRRdk, SSSA_NP) * (1.0 / denom);
+      else
+        C_ep_material = elasticity_tensor_material;  // degenerate fallback
+
+      // Rotate C_ep back to global frame (inverse of material→global rotation)
+      tangent_operator = rotateElasticityTensor(C_ep_material, R);
+    }
+  }
 }
 
 // Initiatilization pass
@@ -1754,13 +1816,13 @@ OrthotropicPlasticityStressUpdate::computeYieldFunction(
   }*/
 
   // Comprehensive diagnostics
-  if (_qp == 0 && (_t_step % 100 == 0 || delta_kappa > 0)) {
+/*  if (_qp == 0 && (_t_step % 100 == 0 || delta_kappa > 0)) {
     Moose::out << "t=" << _t << " step=" << _t_step 
                << " | σ_xx=" << s[0] << " σ_yy=" << s[1] << " σ_zz=" << s[2]
                << " | σ_yz=" << s[3] << " σ_xz=" << s[4] << " σ_xy=" << s[5]
                << " | phi=" << phi << " r=" << r << " Δκ=" << delta_kappa << "\n";
   }
-
+*/
   return f;
 }
 
