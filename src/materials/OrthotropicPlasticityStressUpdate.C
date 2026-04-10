@@ -1754,13 +1754,13 @@ OrthotropicPlasticityStressUpdate::computeYieldFunction(
   }*/
 
   // Comprehensive diagnostics
-  if (_qp == 0 && (_t_step % 100 == 0 || delta_kappa > 0)) {
+/*  if (_qp == 0 && (_t_step % 100 == 0 || delta_kappa > 0)) {
     Moose::out << "t=" << _t << " step=" << _t_step 
                << " | σ_xx=" << s[0] << " σ_yy=" << s[1] << " σ_zz=" << s[2]
                << " | σ_yz=" << s[3] << " σ_xz=" << s[4] << " σ_xy=" << s[5]
                << " | phi=" << phi << " r=" << r << " Δκ=" << delta_kappa << "\n";
   }
-
+*/
   return f;
 }
 
