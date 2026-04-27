@@ -1,4 +1,4 @@
-# Orthotropic Plasticity Model for Aragonite Crystals
+# Orthotropic Plasticity Model for Mineralised Tissues
 
 A multiscale finite element framework for modeling coral aragonite biomechanics and trabecular bone, implemented in the [MOOSE](https://mooseframework.inl.gov/) framework.
 
