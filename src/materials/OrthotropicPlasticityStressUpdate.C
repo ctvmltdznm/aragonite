@@ -696,7 +696,8 @@ OrthotropicPlasticityStressUpdate::updateState(
       // DYDS = yield gradient (rate-independent → no viscous correction)
       // DYDK = dr/dkappa
       RankTwoTensor  DYDS_final  = DSY_final;
-      Real           DYDK_final  = dr_new;
+      // Real           DYDK_final  = dr_new; // OLD--wrong apparently
+      Real           DYDK_final  = -dr_new;
 
       // dNP/dS = (DDSY·HI - DSY⊗DHDS) / HI^2
       RankFourTensor DNPDS_final = (DDSY_final * HI_final
@@ -730,7 +731,14 @@ OrthotropicPlasticityStressUpdate::updateState(
         C_ep_material = elasticity_tensor_material;  // degenerate fallback
 
       // Rotate C_ep back to global frame (inverse of material→global rotation)
-      tangent_operator = rotateElasticityTensor(C_ep_material, R);
+      //tangent_operator = rotateElasticityTensor(C_ep_material, R);
+      RankFourTensor C_ep_sym = C_ep_material;
+      for (unsigned i = 0; i < 3; i++)
+        for (unsigned j = 0; j < 3; j++)
+          for (unsigned k = 0; k < 3; k++)
+            for (unsigned l = 0; l < 3; l++)
+              C_ep_sym(i,j,k,l) = 0.5*(C_ep_material(i,j,k,l) + C_ep_material(k,l,i,j));
+      tangent_operator = rotateElasticityTensor(C_ep_sym, R);
     }
   }
 }
@@ -981,7 +989,8 @@ OrthotropicPlasticityStressUpdate::performNewtonRaphson(
     
     // DYDS = DSY + viscous correction
     RankTwoTensor DYDS = DSY;
-    Real DYDK = dr_i;  // UMAT: DRAD = -dr/dκ, but my dr_i = +dr/dκ, so use -dr_i
+    Real DYDK = -dr_i;  // UMAT: DRAD = -dr/dκ, but my dr_i = +dr/dκ, so use -dr_i
+    //Real DYDK = dr_i; // OLD--wrong apparently
     
     if (_viscosity_mode != ViscosityMode::RATE_INDEPENDENT && dt > 1e-16 && HI > 1e-14) {
       RankTwoTensor dvisc_ds;
@@ -1146,7 +1155,8 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
     
     // DYDS = DSY + viscous correction
     RankTwoTensor DYDS = DSY;
-    Real DYDK = dr_i;
+    // Real DYDK = dr_i; // OLD--wrong apparently
+    Real DYDK = -dr_i;
     if (_viscosity_mode != ViscosityMode::RATE_INDEPENDENT && dt > 1e-16 && HI > 1e-14) {
       RankTwoTensor dvisc_ds;
       Real dvisc_dk;
