@@ -59,7 +59,7 @@ Skeletal tissue modeling:
 conda activate moose
 
 # Clone this repository
-git clone https://gitlab.tu-clausthal.de/iww/tuc-fe-moose
+git clone https://github.com/ctvmltdznm/aragonite.git
 cd aragonite
 
 # Build
