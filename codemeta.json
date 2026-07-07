@@ -4,19 +4,27 @@
   "name": "TUC-FE-MOOSE (aragoniteApp)",
   "description": "Open-source MOOSE application: MD-to-FEM pipeline for hierarchical biominerals with orthotropic crystal plasticity, fabric-based elasticity, and a homogenized exponential cohesive-zone interface law. Case study: cold-water coral aragonite; validation: trabecular bone.",
   "codeRepository": "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose",
-  "programmingLanguage": ["C++", "Python"],
+  "programmingLanguage": ["C++", "Python", "bash"],
   "runtimePlatform": "MOOSE Framework",
   "operatingSystem": ["Linux"],
-  "license": "https://spdx.org/licenses/LGPL-2.1-or-later.html",
+  "license": "https://spdx.org/licenses/LGPL-2.1-only.html",
   "version": "1.0.0",
   "softwareVersion": "1.0.0",
-  "identifier": "10.5281/zenodo.XXXXXXX",
+  "dateCreated": "2026",
+  "identifier": "https://doi.org/10.5281/zenodo.XXXXXXX",
   "author": [
     {
       "@type": "Person",
-      "givenName": "<Given>",
-      "familyName": "<Family>",
-      "@id": "https://orcid.org/0000-0000-0000-0000",
+      "givenName": "Nikolai",
+      "familyName": "Kvashin",
+      "@id": "https://orcid.org/0000-0002-6924-0083",
+      "affiliation": { "@type": "Organization", "name": "IWW, Technische Universität Clausthal" }
+    },
+    {
+      "@type": "Person",
+      "givenName": "Uwe",
+      "familyName": "Wolfram",
+      "@id": "https://orcid.org/0000-0003-1068-3709",
       "affiliation": { "@type": "Organization", "name": "IWW, Technische Universität Clausthal" }
     }
   ],
@@ -26,13 +34,13 @@
   ],
   "softwareRequirements": [
     { "@type": "SoftwareApplication", "name": "MOOSE Framework", "url": "https://mooseframework.inl.gov" },
-    { "@type": "SoftwareApplication", "name": "conda" }
+    { "@type": "SoftwareApplication", "name": "conda", "url": "https://docs.conda.io" }
   ],
   "referencePublication": {
     "@type": "ScholarlyArticle",
     "name": "Kvashin et al. (2026): Atomistic origins of interface-controlled failure in polycrystalline aragonite",
-    "identifier": "<MD dataset / paper DOI>"
+    "identifier": "https://doi.org/10.1016/j.jmbbm.2026.107403"
   },
-  "isBasedOn": "https://mooseframework.inl.gov",
+  "isBasedOn": {"@type": "SoftwareSourceCode", "name": "MOOSE Framework", "codeRepository": "https://github.com/idaholab/moose"}
   "relatedLink": ["https://mooseframework.inl.gov", "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"]
 }
