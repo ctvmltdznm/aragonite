@@ -34,6 +34,7 @@ declare -A TEST_CATEGORIES=(
     ["postyield"]="Post-yield behavior modes"
     ["grains"]="Multi-grain bicrystal tests"
     ["czm"]="Cohesive zone model tests"
+    ["fabric"]="Fabric-scaling elasticity + plasticity tests"
     ["rve"]="Representative volume element tests"
 )
 

@@ -47,7 +47,7 @@
 [Physics/SolidMechanics]
   [QuasiStatic]
     [bulk]
-      strain = FINITE
+      strain = SMALL
       incremental = true
       add_variables = true
       generate_output = 'stress_xx stress_yy stress_zz stress_xy stress_xz stress_yz strain_xx strain_yy strain_zz vonmises_stress'
@@ -57,7 +57,7 @@
   [CohesiveZone]
     [./czm]
       boundary = 'grain_1_grain_2'
-      strain = FINITE
+      strain = SMALL
       generate_output = 'traction_x traction_y traction_z normal_traction tangent_traction jump_x jump_y jump_z normal_jump tangent_jump'
     [../]
   []
@@ -89,10 +89,6 @@
     family = MONOMIAL
   []
   [delta_eff]
-    order = CONSTANT
-    family = MONOMIAL
-  []
-  [n_contacts]
     order = CONSTANT
     family = MONOMIAL
   []
@@ -177,13 +173,6 @@
     boundary = 'grain_1_grain_2'  # Only on interface
     execute_on = 'TIMESTEP_END'
   []
-  [n_contacts_aux]
-    type = MaterialRealAux
-    variable = n_contacts
-    property = n_contacts
-    boundary = 'grain_1_grain_2'
-    execute_on = 'TIMESTEP_END'
-  []
   [mode_ratio_aux]
     type = ParsedAux
     variable = mode_ratio
@@ -258,8 +247,9 @@
     # ========================================
     # HOMOGENIZATION PARAMETERS
     # ========================================
-    md_contact_area = 1.0e-10     # (10 nm)^2 per MD contact
-    max_contacts = 10000          # Cap for computational efficiency
+    quality_std_dev = 0.1          # within-QP GH spread (10% CV)
+    spatial_quality_std_dev = 0.15 # across-QP spatial heterogeneity
+    spatial_random_seed = 1234     # spatial quality field seed
     
     # ========================================
     # EXPONENTIAL COEFFICIENTS
@@ -404,10 +394,6 @@
     boundary = 'grain_1_grain_2'
   []
   
-  [max_n_contacts]
-    type = ElementExtremeValue
-    variable = n_contacts
-  []
   [newton_its]
     type = NumNonlinearIterations
   []

@@ -92,14 +92,6 @@
     order = CONSTANT
     family = MONOMIAL
   []
-  [n_contacts]
-    order = CONSTANT
-    family = MONOMIAL
-  []
-  [interface_area]
-    order = CONSTANT
-    family = MONOMIAL
-  []
 []
 
 [ICs]
@@ -177,13 +169,6 @@
     boundary = 'grain_1_grain_2'  # Only on interface
     execute_on = 'TIMESTEP_END'
   []
-  [n_contacts_aux]
-    type = MaterialRealAux
-    variable = n_contacts
-    property = n_contacts
-    boundary = 'grain_1_grain_2'
-    execute_on = 'TIMESTEP_END'
-  []
 []
 
 [Materials]
@@ -250,8 +235,9 @@
     # ========================================
     # HOMOGENIZATION PARAMETERS
     # ========================================
-    md_contact_area = 1.0e-10     # (10 nm)^2 per MD contact
-    max_contacts = 10000          # Cap for computational efficiency
+    quality_std_dev = 0.1          # within-QP GH spread (10% CV)
+    spatial_quality_std_dev = 0.15 # across-QP spatial heterogeneity
+    spatial_random_seed = 1234     # spatial quality field seed
     
     # ========================================
     # EXPONENTIAL COEFFICIENTS
@@ -384,10 +370,6 @@
     boundary = 'grain_1_grain_2'
   []
   
-  [max_n_contacts]
-    type = ElementExtremeValue
-    variable = n_contacts
-  []
   [newton_its]
     type = NumNonlinearIterations
   []

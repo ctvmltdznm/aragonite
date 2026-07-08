@@ -279,7 +279,7 @@
   dtmax = 0.1
   dtmin = 1e-10
   dt = 0.05
-  end_time = 5
+  end_time = 1
   
   solve_type = 'NEWTON'
   petsc_options_iname = '-pc_type -pc_factor_mat_solver_package'

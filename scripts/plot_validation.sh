@@ -110,7 +110,7 @@ if ! python3 -c "import matplotlib" 2>/dev/null; then
 fi
 
 # Plot categories
-CATEGORIES=("ortho" "asymmetry" "postyield" "grains" "czm")
+CATEGORIES=("ortho" "asymmetry" "postyield" "grains" "czm" "fabric")
 
 for category in "${CATEGORIES[@]}"; do
     if [ -n "$CATEGORY_FILTER" ] && [ "$category" != "$CATEGORY_FILTER" ]; then

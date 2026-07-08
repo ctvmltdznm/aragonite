@@ -72,7 +72,7 @@
   [SolidMechanics]
     [QuasiStatic]
       [bulk]
-        strain = FINITE
+        strain = SMALL
         incremental = true
         add_variables = true
         generate_output = 'stress_xx stress_yy stress_zz strain_xx strain_yy strain_zz vonmises_stress'
@@ -84,7 +84,7 @@
       [./grain_interfaces]
         # All 6 grain boundaries (found by --mesh-only)
         boundary = 'Block0_Block1 Block0_Block2 Block0_Block3 Block1_Block2 Block1_Block3 Block2_Block3'
-        strain = FINITE
+        strain = SMALL
         generate_output = 'traction_x traction_y traction_z normal_traction tangent_traction jump_x jump_y jump_z normal_jump tangent_jump'
       [../]
     []
@@ -131,10 +131,6 @@
     order = CONSTANT
     family = MONOMIAL
   []
-  [n_contacts]
-    order = CONSTANT
-    family = MONOMIAL
-  []
 []
 
 [AuxKernels]
@@ -164,14 +160,6 @@
     execute_on = 'TIMESTEP_END'
   []
   
-  [n_contacts_aux]
-    type = MaterialRealAux
-    variable = n_contacts
-    property = n_contacts
-    boundary = 'Block0_Block1 Block0_Block2 Block0_Block3 Block1_Block2 Block1_Block3 Block2_Block3'
-    check_boundary_restricted = false  # Allow triple junctions
-    execute_on = 'TIMESTEP_END'
-  []
 []
 
 [Materials]
@@ -235,23 +223,22 @@
     type = HomogenizedExponentialCZM
     boundary = 'Block0_Block1 Block0_Block2 Block0_Block3 Block1_Block2 Block1_Block3 Block2_Block3'  # Same as CohesiveZone boundary
 
-    normal_strength = 700.0
-    shear_strength_s = 400.0
-    shear_strength_t = 400.0
-    
-    delta_0 = 0.1
-    
-    md_contact_area = 1.0e-4
-    max_contacts = 10000
-    
-    mu = 0.95
-    eta = 0.1
-    
+    # Proven protein production parameters (config1 run to t=10)
+    normal_strength = 626.0
+    shear_strength_s = 374.0
+    shear_strength_t = 374.0
+
+    delta_0_normal = 0.1
+    delta_0_tangent = 0.1
+
+    mu = 0.92
+    eta = 0.27                     # eta < mu: gradual softening, positive-definite tangent
+
     damage_viscosity = 2.5
-    
-    strength_std_dev = 0.0
-    initial_damage_max = 0.0
-    delta0_std_dev = 0.0
+
+    quality_std_dev = 0.1
+    spatial_quality_std_dev = 0.15
+    spatial_random_seed = 1234
   []
 []
 
@@ -320,11 +307,6 @@
     variable = normal_jump
     boundary = 'Block0_Block1 Block0_Block2 Block0_Block3 Block1_Block2 Block1_Block3 Block2_Block3'
   []
-  [avg_n_contacts]
-    type = SideAverageValue
-    variable = n_contacts
-    boundary = 'Block0_Block1 Block0_Block2 Block0_Block3 Block1_Block2 Block1_Block3 Block2_Block3'
-  []
   # Per-interface monitoring (Block0_Block1 is largest)
   [damage_01]
     type = SideAverageValue
@@ -353,7 +335,7 @@
   dtmax = 0.5
   dtmin = 1e-10
   dt = 0.1
-  end_time = 5
+  end_time = 1.2
   
   solve_type = 'NEWTON'
   petsc_options_iname = '-pc_type -pc_factor_mat_solver_package'

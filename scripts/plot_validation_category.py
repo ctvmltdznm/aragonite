@@ -269,6 +269,33 @@ def plot_czm(test_root, output_dir, compare=False):
     plt.close()
     print(f"  → czm.png")
 
+
+def plot_fabric(test_root, output_dir, compare=False):
+    """Overlay stress-strain for fabric vs explicit orthotropy (elastic slope + yield)."""
+    fig, ax = plt.subplots(figsize=(10, 8))
+    tests = [
+        ('fabric_plasticity',   'Fabric scaling',        COLORS[0], '-'),
+        ('explicit_plasticity', 'Explicit orthotropy',   COLORS[3], '--'),
+    ]
+    for name, label, color, ls in tests:
+        csv_file = test_root / 'fabric' / name / f'{name}_out.csv'
+        if csv_file.exists():
+            d = read_csv(csv_file)
+            if 'strain_zz' in d and 'stress_zz' in d:
+                ax.plot(np.abs(d['strain_zz']) * 100, np.abs(d['stress_zz']) / 1000,
+                        color=color, linewidth=2.5, linestyle=ls, label=label)
+    ax.axhline(5.34, color='gray', linestyle=':', alpha=0.6, label='sigma_zz yield = 5340 MPa')
+    ax.set_xlabel('Strain zz (%)', fontsize=12)
+    ax.set_ylabel('Stress zz (GPa)', fontsize=12)
+    ax.set_title('Fabric vs Explicit Orthotropy (elastic slope + plastic yield)',
+                 fontsize=14, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best', fontsize=10)
+    plt.tight_layout()
+    plt.savefig(output_dir / 'fabric.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  \u2192 fabric.png")
+
 def main():
     parser = argparse.ArgumentParser(description='Plot validation results')
     parser.add_argument('--category', required=True)
@@ -288,6 +315,8 @@ def main():
         plot_grains(args.test_root, args.output_dir, args.compare)
     elif args.category == 'czm':
         plot_czm(args.test_root, args.output_dir, args.compare)
+    elif args.category == 'fabric':
+        plot_fabric(args.test_root, args.output_dir, args.compare)
     else:
         print(f"Unknown category: {args.category}")
 
