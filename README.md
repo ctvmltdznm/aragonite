@@ -52,7 +52,15 @@ Skeletal tissue modeling:
 - C++17 compiler (GCC 9+, Clang 10+)
 - Python 3.6+ with matplotlib (for validation plotting)
 
-Requires a MOOSE build environment via conda. Two equivalent options:
+Quick conda setup: 
+```bash
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+# Follow prompts, answer 'yes' to initialization
+source ~/.bashrc
+```
+
+Two equivalent options:
 
 **Option A — manual conda + clone**
 ```bash
