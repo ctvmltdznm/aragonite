@@ -21,7 +21,7 @@ license: LGPL-2.1-only
 repository-code: "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"
 url: "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"
 version: "1.0.0"
-date-released: "2026-07-15"
+date-released: "2026-07-08"
 doi: "10.5281/zenodo.21258387"
 keywords:
   - finite element method
