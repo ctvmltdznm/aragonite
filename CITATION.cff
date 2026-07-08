@@ -18,12 +18,11 @@ authors:
     orcid: "https://orcid.org/0000-0003-1068-3709"
     affiliation: "IWW, Technische Universität Clausthal"
 license: LGPL-2.1-only
-repository: "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"
 repository-code: "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"
 url: "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"
 version: "1.0.0"
 date-released: "2026-07-15"
-doi: "https://doi.org/10.5281/zenodo.XXXXXXX"
+doi: "10.5281/zenodo.21258387"
 keywords:
   - finite element method
   - MOOSE
@@ -42,6 +41,6 @@ references:
       - family-names: "Ozel"
         given-names: "Ali"
       - family-names: "Wolfram"
-        given-names: "Uwe"        
+        given-names: "Uwe"
     year: 2026
-    doi: "https://doi.org/10.1016/j.jmbbm.2026.107403"
+    doi: "10.1016/j.jmbbm.2026.107403"
