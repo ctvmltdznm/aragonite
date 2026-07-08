@@ -52,22 +52,28 @@ Skeletal tissue modeling:
 - C++17 compiler (GCC 9+, Clang 10+)
 - Python 3.6+ with matplotlib (for validation plotting)
 
-### Build
+Requires a MOOSE build environment via conda. Two equivalent options:
 
+**Option A — manual conda + clone**
 ```bash
-# Activate MOOSE conda environment
+git clone https://gitlab.tu-clausthal.de/iww/tuc-fe-moose.git
+cd tuc-fe-moose
+conda config --add channels https://conda.software.inl.gov/public
+conda create -n moose moose-dev -c conda-forge
 conda activate moose
-
-# Clone this repository
-git clone https://gitlab.tu-clausthal.de/iww/tuc-fe-moose
-cd aragonite
-
-# Build
 make -j8
-
-# Verify
-./aragonite-opt --version
 ```
+
+**Option B — from environment.yml**
+```bash
+git clone https://gitlab.tu-clausthal.de/iww/tuc-fe-moose.git
+cd tuc-fe-moose
+conda env create -f environment.yml
+conda activate moose
+make -j8
+```
+
+> Tested with MOOSE (`moose-dev`) build **2026-03-28**, commit `73af6c9`.
 
 ## Quick Start
 
