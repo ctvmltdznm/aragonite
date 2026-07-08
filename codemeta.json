@@ -11,7 +11,7 @@
   "version": "1.0.0",
   "softwareVersion": "1.0.0",
   "dateCreated": "2026",
-  "identifier": "https://doi.org/10.5281/zenodo.XXXXXXX",
+  "identifier": "https://doi.org/10.5281/zenodo.21258387",
   "author": [
     {
       "@type": "Person",
@@ -41,6 +41,6 @@
     "name": "Kvashin et al. (2026): Atomistic origins of interface-controlled failure in polycrystalline aragonite",
     "identifier": "https://doi.org/10.1016/j.jmbbm.2026.107403"
   },
-  "isBasedOn": {"@type": "SoftwareSourceCode", "name": "MOOSE Framework", "codeRepository": "https://github.com/idaholab/moose"}
+  "isBasedOn": {"@type": "SoftwareSourceCode", "name": "MOOSE Framework", "codeRepository": "https://github.com/idaholab/moose"},
   "relatedLink": ["https://mooseframework.inl.gov", "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"]
 }
