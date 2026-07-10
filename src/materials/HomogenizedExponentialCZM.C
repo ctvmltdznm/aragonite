@@ -339,6 +339,15 @@ HomogenizedExponentialCZM::computeInterfaceTractionAndDerivatives()
     }
     _qp_damage[_qp][g] = D_g;
 
+    // ── Past delta_c: force complete failure, bypass viscous delay ─────────
+    // Once kappa >= dc_g the contact is fully separated. 
+    if (kappa_g >= dc_g)
+    {
+      D_g                = 1.0;
+      _qp_damage[_qp][g] = 1.0;
+      visc_factor        = 0.0;
+    }
+
     // dD/d(delta_eff) — full chain: D(D_target(kappa(delta_eff)))
     const Real dD_deff_g = visc_factor * dD_dkappa_g * dkappa_deff;
 
