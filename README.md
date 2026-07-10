@@ -68,7 +68,7 @@ cd ~   # or any parent directory
 git clone https://github.com/idaholab/moose.git
 
 # 2. This application, as a sibling of moose/
-git clone git clone https://github.com/ctvmltdznm/aragonite.git
+git clone https://gitlab.tu-clausthal.de/iww/tuc-fe-moose.git
 
 # 3. MOOSE build environment (conda)
 conda config --add channels https://conda.software.inl.gov/public
