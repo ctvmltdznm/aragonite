@@ -2,13 +2,10 @@
 
 A multiscale finite element framework for modeling coral aragonite biomechanics and trabecular bone, implemented in the [MOOSE](https://mooseframework.inl.gov/) framework.
 
-[![License: LGPL](https://img.shields.io/badge/License-LGPL-blue.svg)](https://opensource.org/licenses/LGPL-2.1)
-<!-- Add after Zenodo upload: -->
-<!-- [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXX) -->
-
-Fork to create a new MOOSE-based application.
-
-For more information see: [https://mooseframework.inl.gov/getting_started/new_users.html#create-an-app](https://mooseframework.inl.gov/getting_started/new_users.html#create-an-app)
+[![License: LGPL v2.1](https://img.shields.io/badge/License-LGPL_v2.1-blue.svg)](https://spdx.org/licenses/LGPL-2.1-only.html)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21258387.svg)](https://doi.org/10.5281/zenodo.21258387)
+<!-- DOI resolves once the Zenodo record is published. After publishing you may
+     swap in the concept DOI ("Cite all versions") if you prefer always-latest. -->
 
 ## Overview
 
@@ -23,7 +20,7 @@ This framework bridges molecular dynamics (MD) simulations to continuum finite e
 - **Tension-compression asymmetry** via linear term in yield function
 - **Five post-yield evolution modes**: perfect plasticity, exponential/linear hardening, exponential/piecewise softening
 - **Density-fabric scaling** for trabecular bone (Zysset-Curnier elasticity, Schwiedrzik plasticity)
-- **Homogenized cohesive zone model (CZM)** for grain boundary interfaces with MD-derived parameters and Gauss-Hermite probabilistic homogenization (Wang et el. 2025)
+- **Homogenized cohesive zone model (CZM)** for grain boundary interfaces with MD-derived parameters and Gauss-Hermite probabilistic homogenization (Wang et al. 2025)
 - **Euler angle-based orientation** for polycrystalline representative volume elements (RVEs)
 
 ## Physical Systems
@@ -48,26 +45,68 @@ Skeletal tissue modeling:
 
 ### Prerequisites
 
-- [MOOSE Framework](https://mooseframework.inl.gov/getting_started/installation/index.html) (conda install recommended)
 - C++17 compiler (GCC 9+, Clang 10+)
+- [conda](https://docs.conda.io) (Miniconda) — quick setup below
 - Python 3.6+ with matplotlib (for validation plotting)
+
+Quick conda setup:
+```bash
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+# Follow prompts, answer 'yes' to initialization
+source ~/.bashrc
+```
 
 ### Build
 
+This is a MOOSE application: it builds against a local clone of the **MOOSE source tree**, which must sit in the *same parent folder* as this repository - the app's Makefile looks for `../moose/framework/build.mk`. So clone both repos side by side:
+
 ```bash
-# Activate MOOSE conda environment
+cd ~   # or any parent directory
+
+# 1. MOOSE source tree (provides framework/build.mk)
+git clone https://github.com/idaholab/moose.git
+
+# 2. This application, as a sibling of moose/
+git clone git clone https://github.com/ctvmltdznm/aragonite.git
+
+# 3. MOOSE build environment (conda)
+conda config --add channels https://conda.software.inl.gov/public
+conda create -n moose moose-dev -c conda-forge
 conda activate moose
 
-# Clone this repository
-git clone https://github.com/ctvmltdznm/aragonite.git
-cd aragonite
-
-# Build
+# 4. Build the app
+cd tuc-fe-moose
 make -j8
-
-# Verify
-./aragonite-opt --version
 ```
+
+Resulting layout:
+```
+~/
+├── moose/          # MOOSE framework source
+└── tuc-fe-moose/   # this application
+```
+
+If MOOSE is cloned elsewhere, set `MOOSE_DIR=/path/to/moose` before `make`.
+
+**MOOSE version.** The app builds against current MOOSE and, in principle, tracks
+the latest framework. For an exact, reproducible build it was tested with:
+
+> MOOSE (`moose-dev`) build **2026-03-28**, commit `73af6c9`.
+
+To reproduce that exact build, pin the MOOSE checkout before step 4:
+```bash
+cd ~/moose && git checkout 73af6c9 && cd -
+```
+
+**Alternative conda setup (`environment.yml`).** The repo also ships an
+`environment.yml` declaring the same dependencies:
+```bash
+conda env create -f environment.yml
+conda activate moose
+```
+If this errors with `database is locked` (a conda repodata-cache issue on some
+conda versions), use the `conda create` command in step 3 instead.
 
 ## Quick Start
 
@@ -94,7 +133,7 @@ paraview x_tension_out.e
 | **grains** | 4 | Multi-grain orientation effects |
 | **czm** | 4 | Interface failure (Mode I, II, mixed, cycling) |
 | **fabric** | 2 | `fabric_plasticity` (Zysset-Curnier) vs `explicit_plasticity` (equivalent `symmetric9`): verifies both give identical elastic slope and yield stress |
-| **rve** | 2 | Polycrystalline RVE with GH cohesive interfaces (`grain_interfaces`); run + gold-compared |
+| **rve** | 2 | Polycrystalline RVE with GH cohesive interfaces (`grain_interfaces`) |
 
 ```bash
 cd scripts
@@ -102,7 +141,7 @@ cd scripts
 # Make scripts executable (first time only)
 chmod +x *.sh *.py
 
-# Run all 25 validation tests
+# Run all validation tests
 ./run_validation.sh
 
 # Run specific category
@@ -118,7 +157,7 @@ chmod +x *.sh *.py
 ```
 
 **Test passes if:**
-- Shows `[PASS] Output matches gold file`
+- Shows `[PASS] Matches gold file`
 - Segfaults during cleanup are harmless
 
 **Generate validation plots:**
@@ -260,10 +299,10 @@ Protein-aragonite interfaces with Gauss-Hermite probabilistic homogenization:
     shear_strength_t = 374.0       # MPa
 
     # Mode-specific critical openings
-    delta_0_normal  = 1.91e-7      # mm (191 pm)
-    delta_0_tangent = 2.17e-7      # mm (217 pm)
+    delta_0_normal  = 1.91e-4      # μm (0.191 nm)
+    delta_0_tangent = 2.17e-4      # μm (0.217 nm)
 
-    # Shape exponents (eta < mu required)
+    # Shape exponents (eta <= mu required)
     mu  = 0.92
     eta = 0.27
 
@@ -274,7 +313,6 @@ Protein-aragonite interfaces with Gauss-Hermite probabilistic homogenization:
 
     # Regularization
     damage_viscosity        = 2.5    # s
-    damage_activation_width = 0.02
   []
 []
 ```
@@ -332,8 +370,8 @@ Complete technical documentation: [`doc/aragonite_plasticity_documentation.pdf`]
 |----------|---------|-----------------|
 | Normal strength σₙ | 626 MPa | 742 MPa |
 | Shear strength τₛ | 374 MPa | 354 MPa |
-| Critical opening δ₀,ₙ | 191 pm | 224 pm |
-| Critical opening δ₀,ₜ | 217 pm | 182 pm |
+| Critical opening δ₀,ₙ | 0.19 nm | 0.224 nm |
+| Critical opening δ₀,ₜ | 0.22 nm | 0.182 nm |
 | Loading exponent μ | 0.916 | 1.224 |
 
 Water-010 face excluded (non-equivalent electrostatics).
@@ -344,7 +382,7 @@ Water-010 face excluded (non-equivalent electrostatics).
 
 **Scaling exponents:** k = 2.0, l = 1.0 (elasticity); p = 1.28–1.69, q = 0.5–1.5 (plasticity)
 
-**References:** [Wolfram et al. (2012)](https://doi.org/10.1016/j.jmbbm.2012.07.005), [Rincón-Kohli & Zysset (2009)](https://doi.org/10.1007/s10237-008-0128-z), [Zysset & Curnier (1995)](https://doi.org/10.1016/0167-6636(95)00018-6), [Schwiedrzik et al. (2013)](https://doi.org/10.1007/s10237-013-0472-5), [Wang et el. (2025)](https://doi.org/10.1016/j.conbuildmat.2025.142454), [Kvashin et al. (2026)](https://doi.org/10.1016/j.jmbbm.2026.107403).
+**References:** [Wolfram et al. (2012)](https://doi.org/10.1016/j.jmbbm.2012.07.005), [Rincón-Kohli & Zysset (2009)](https://doi.org/10.1007/s10237-008-0128-z), [Zysset & Curnier (1995)](https://doi.org/10.1016/0167-6636(95)00018-6), [Schwiedrzik et al. (2013)](https://doi.org/10.1007/s10237-013-0472-5), [Wang et al. (2025)](https://doi.org/10.1016/j.conbuildmat.2025.142454), [Kvashin et al. (2026)](https://doi.org/10.1016/j.jmbbm.2026.107403).
 
 ## Implementation Details
 
@@ -370,7 +408,7 @@ Water-010 face excluded (non-equivalent electrostatics).
 ## Project Structure
 
 ```
-aragonite/
+tuc-fe-moose/
 ├── include/
 │   ├── base/                # Application base
 │   └── materials/           # Material headers (.h)
@@ -383,10 +421,10 @@ aragonite/
 │       ├── ortho/           # 6 tests
 │       ├── asymmetry/       # 2 tests
 │       ├── postyield/       # 5 tests
-│       ├── grains/          # 3 tests
+│       ├── grains/          # 4 tests
 │       ├── czm/             # 4 tests
 │       ├── fabric/          # 2 tests (fabric_plasticity, explicit_plasticity)
-│       ├── rve/             # 2 test  (dry, grain_interfaces)
+│       ├── rve/             # 2 tests (dry, grain_interfaces)
 │       └── figures/         # Generated plots
 ├── scripts/
 │   ├── run_validation.sh
@@ -396,6 +434,9 @@ aragonite/
 │   └── compute_fabric_reference.py
 ├── doc/
 │   └── aragonite_plasticity_documentation.pdf
+├── environment.yml
+├── CITATION.cff
+├── codemeta.json
 ├── Makefile
 ├── LICENSE
 └── README.md
@@ -403,24 +444,29 @@ aragonite/
 
 ## Citation
 
-If you use this software in your research, please cite:
+If you use this software in your research, please cite it via its Zenodo record
+(metadata in [`CITATION.cff`](CITATION.cff)):
 
-<!--
+> Kvashin, N., & Wolfram, U. (2026). *TUC-FE-MOOSE: a MOOSE application for hierarchical biomineral mechanics* (v1.0.1). Zenodo. https://doi.org/10.5281/zenodo.21258387
+
 ```bibtex
-@article{yourname2026,
-  title={Multiscale Finite Element Framework for Coral Aragonite Biomechanics},
-  author={Your Name},
-  journal={Computer Methods in Applied Mechanics and Engineering},
-  year={2026},
-  note={In preparation}
+@software{kvashin_tuc_fe_moose_2026,
+  author    = {Kvashin, Nikolai and Wolfram, Uwe},
+  title     = {TUC-FE-MOOSE: a MOOSE application for hierarchical biomineral mechanics},
+  year      = {2026},
+  version   = {1.0.1},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.21258387},
+  url       = {https://doi.org/10.5281/zenodo.21258387}
 }
 ```
--->
-<!-- After Zenodo upload, add DOI citation -->
+
+Please also cite the MD study the interface parameters derive from:
+[Kvashin et al. (2026)](https://doi.org/10.1016/j.jmbbm.2026.107403).
 
 ## License
 
-This project is licensed under the GNU Library General Public License v2.1 — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU Lesser General Public License v2.1 (LGPL-2.1-only) — see the [LICENSE](LICENSE) file for details.
 
 ---
 

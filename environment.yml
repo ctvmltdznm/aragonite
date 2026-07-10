@@ -1,0 +1,17 @@
+# Reproduces the documented MOOSE build environment.
+# Equivalent to the two-step install in the README:
+#   conda config --add channels https://conda.software.inl.gov/public
+#   conda create -n moose moose-dev -c conda-forge
+# Create in one step with:
+#   conda env create -f environment.yml
+name: moose
+channels:
+  - https://conda.software.inl.gov/public
+  - conda-forge
+dependencies:
+  - moose-dev
+  # Optional -- validation/plot scripts only; uncomment to include in the same env:
+  # - numpy
+  # - scipy
+  # - matplotlib
+  # - pandas

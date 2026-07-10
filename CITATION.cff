@@ -1,0 +1,46 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "TUC-FE-MOOSE (aragoniteApp): a MOOSE application for hierarchical biomineral mechanics"
+abstract: >-
+  An open-source MOOSE application implementing a molecular-dynamics-to-finite-element
+  pipeline for hierarchical biominerals: orthotropic crystal plasticity with
+  tension-compression asymmetry, fabric-based elasticity, and a homogenized exponential
+  cohesive-zone interface law. Primary case study: cold-water coral aragonite; validation
+  target: trabecular bone.
+type: software
+authors:
+  - given-names: "Nikolai"
+    family-names: "Kvashin"
+    orcid: "https://orcid.org/0000-0002-6924-0083"
+    affiliation: "IWW, Technische Universität Clausthal"
+  - given-names: "Uwe"
+    family-names: "Wolfram"
+    orcid: "https://orcid.org/0000-0003-1068-3709"
+    affiliation: "IWW, Technische Universität Clausthal"
+license: LGPL-2.1-only
+repository-code: "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"
+url: "https://gitlab.tu-clausthal.de/iww/tuc-fe-moose"
+version: "1.0.0"
+date-released: "2026-07-08"
+doi: "10.5281/zenodo.21258387"
+keywords:
+  - finite element method
+  - MOOSE
+  - cohesive zone model
+  - crystal plasticity
+  - biomineralization
+  - aragonite
+  - trabecular bone
+  - multiscale modeling
+references:
+  - type: article
+    title: "Atomistic origins of interface-controlled failure in polycrystalline aragonite"
+    authors:
+      - family-names: "Kvashin"
+        given-names: "Nikolai"
+      - family-names: "Ozel"
+        given-names: "Ali"
+      - family-names: "Wolfram"
+        given-names: "Uwe"
+    year: 2026
+    doi: "10.1016/j.jmbbm.2026.107403"
