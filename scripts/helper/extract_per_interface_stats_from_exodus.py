@@ -6,7 +6,7 @@ extract_per_interface_stats.py  (PATCHED - side_set version)
 CHANGE from original: reads interfaces from side_sets instead of
 an interface_id element variable.
 
-Your exodus side set names:
+The exodus side set names:
     block0_block1, block0_block2, block0_block3,
     block1_block2, block1_block3, block2_block3
 
@@ -208,27 +208,35 @@ def extract_per_interface_stats(exodus_file, output_csv='per_interface_stats.csv
                 row[f'{key}_min'] = float(np.min(vals))
                 row[f'{key}_std'] = float(np.std(vals))
 
-            # Derived: δ_eff
+            # Derived: δ_eff  (using positive normal jump only for damage metric)
             if 'normal_jump' in timestep_data and 'tangent_jump' in timestep_data:
                 dn = timestep_data['normal_jump'][elem_ids]
                 dt = timestep_data['tangent_jump'][elem_ids]
-                d_eff = np.sqrt(dn**2 + dt**2)
+                dn_pos = np.maximum(dn, 0.0)               # Macaulay bracket
+                d_eff  = np.sqrt(dn_pos**2 + dt**2)
                 row['delta_eff_avg'] = float(np.mean(d_eff))
                 row['delta_eff_max'] = float(np.max(d_eff))
 
-            # Derived: T_eff
+            # Derived: T_eff — damage-relevant (tensile + shear only)
+            # Raw sqrt(Tn² + Tt²) is dominated by the compressive penalty traction
+            # (Tn can be −3000 MPa on compressed interfaces) and is physically
+            # misleading.  Use sqrt(max(Tn,0)² + Tt²) instead.
             if 'normal_traction' in timestep_data and 'tangent_traction' in timestep_data:
                 Tn = timestep_data['normal_traction'][elem_ids]
                 Tt = timestep_data['tangent_traction'][elem_ids]
-                T_eff = np.sqrt(Tn**2 + Tt**2)
-                row['traction_eff_avg'] = float(np.mean(T_eff))
-                row['traction_eff_max'] = float(np.max(T_eff))
+                Tn_pos  = np.maximum(Tn, 0.0)              # exclude compressive penalty
+                T_dmg   = np.sqrt(Tn_pos**2 + Tt**2)      # damage-driving traction
+                row['traction_eff_avg'] = float(np.mean(T_dmg))
+                row['traction_eff_max'] = float(np.max(T_dmg))
+                row['traction_shear_avg'] = float(np.mean(np.abs(Tt)))
+                row['normal_traction_tensile_avg'] = float(np.mean(Tn_pos))
 
-            # Derived: mode ratio φ
+            # Derived: mode ratio φ = |δ_t| / δ_n_pos  (compression → φ → ∞)
             if 'normal_jump' in timestep_data and 'tangent_jump' in timestep_data:
-                dn_avg = row['normal_jump_avg']
-                dt_avg = row['tangent_jump_avg']
-                row['phi_avg'] = abs(dt_avg) / (abs(dn_avg) + 1e-30)
+                dn_pos_avg = float(np.mean(np.maximum(
+                    timestep_data['normal_jump'][elem_ids], 0.0)))
+                dt_avg = abs(row['tangent_jump_avg'])
+                row['phi_avg'] = dt_avg / (dn_pos_avg + 1e-30)
 
             results.append(row)
 
@@ -255,84 +263,175 @@ def extract_per_interface_stats(exodus_file, output_csv='per_interface_stats.csv
     return df
 
 
-def plot_per_interface(csv_file='per_interface_stats.csv'):
-    """Quick 4-panel preview."""
+def plot_per_interface(csv_file='per_interface_stats.csv', top_n=8):
+    """
+    4-panel figure. Automatically adapts legend strategy to the number of interfaces:
+      ≤15  : full legend (one entry per interface)
+      >15  : no legend; all interfaces drawn as thin semi-transparent lines;
+             the top_n MOST DAMAGED interfaces at the final timestep are
+             highlighted in colour and annotated.
+    """
     import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
 
     df = pd.read_csv(csv_file)
     interfaces = sorted(df['interface_id'].unique())
-    cmap = plt.cm.tab10
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    n_ifaces   = len(interfaces)
+    many       = n_ifaces > 15
 
-    def label(df, iface):
-        """Convert interface name to readable format"""
-        row = df[df['interface_id'] == iface]
+    # ── colour strategy ───────────────────────────────────────────────────────
+    if many:
+        # Find top_n interfaces by final-step average damage
+        t_last = df['time'].max()
+        fin    = df[df['time'] == t_last].copy()
+        d_col  = 'damage_avg' if 'damage_avg' in fin.columns else 'traction_eff_avg'
+        top_ids = set(
+            fin.nlargest(top_n, d_col)['interface_id'].tolist()
+        )
+        import matplotlib
+        if hasattr(matplotlib, 'colormaps'):
+            cmap_top = matplotlib.colormaps.get_cmap('tab10').resampled(top_n)
+        else:
+            cmap_top = cm.get_cmap('tab10', top_n)
+        top_colors = {iid: cmap_top(i)
+                      for i, iid in enumerate(sorted(top_ids))}
+        bg_color  = (0.6, 0.6, 0.6, 0.12)   # thin grey for all others
+    else:
+        cmap_full = cm.get_cmap('tab10')
+        top_ids   = set(interfaces)
+
+    def iface_color(iface_id):
+        if many:
+            return top_colors.get(iface_id, bg_color)
+        return cmap_full(interfaces.index(iface_id) % 10)
+
+    def iface_lw(iface_id):
+        return 1.8 if (not many or iface_id in top_ids) else 0.5
+
+    def iface_alpha(iface_id):
+        return 1.0 if (not many or iface_id in top_ids) else 0.35
+
+    def iface_label(iface_id):
+        row = df[df['interface_id'] == iface_id]
         if 'interface_name' in df.columns:
             name = row['interface_name'].iloc[0]
-            # Convert "Block0_Block1" → "Interface 0-1"
             if name.startswith('Block'):
                 parts = name.replace('Block', '').split('_')
-                #return f'Interface {parts[0]}'
                 if len(parts) == 2:
-                    return f'Interface {parts[0]}-{parts[1]}'
+                    return f'{parts[0]}–{parts[1]}'
             return name
-        return f'Interface {iface}'
+        return str(iface_id)
+
+    # ── figure ────────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # Separate background and highlighted lines so highlights are always on top
+    def draw_lines(ax, x_col, y_col, unit_x=1.0, unit_y=1.0,
+                   clip_y=None, skip_zero=False):
+        # background first
+        if many:
+            for iid in interfaces:
+                if iid in top_ids:
+                    continue
+                d = df[df['interface_id'] == iid]
+                xs = d[x_col] * unit_x
+                ys = d[y_col] * unit_y
+                if skip_zero:
+                    mask = d['time'] > 0
+                    xs, ys = xs[mask], ys[mask]
+                if clip_y is not None:
+                    ys = ys.clip(lower=0)
+                ax.plot(xs, ys, lw=0.5, alpha=0.25, color=(0.55, 0.55, 0.55))
+        # highlighted on top
+        for iid in (sorted(top_ids) if many else interfaces):
+            d   = df[df['interface_id'] == iid]
+            xs  = d[x_col] * unit_x
+            ys  = d[y_col] * unit_y
+            if skip_zero:
+                mask = d['time'] > 0
+                xs, ys = xs[mask], ys[mask]
+            if clip_y is not None:
+                ys = ys.clip(lower=0)
+            ax.plot(xs, ys,
+                    lw=iface_lw(iid), alpha=iface_alpha(iid),
+                    color=iface_color(iid),
+                    label=iface_label(iid) if not many else None,
+                    zorder=3)
+        if many:
+            # draw highlighted with legend label
+            for i, iid in enumerate(sorted(top_ids)):
+                d  = df[df['interface_id'] == iid]
+                xs = d[x_col] * unit_x
+                ys = d[y_col] * unit_y
+                if skip_zero:
+                    mask = d['time'] > 0
+                    xs, ys = xs[mask], ys[mask]
+                if clip_y is not None:
+                    ys = ys.clip(lower=0)
+                ax.plot(xs, ys, lw=2.0, alpha=1.0,
+                        color=top_colors[iid],
+                        label=iface_label(iid), zorder=4)
 
     # (a) Damage
     ax = axes[0, 0]
     if 'damage_avg' in df.columns:
-        for i, iface in enumerate(interfaces):
-            d = df[df['interface_id'] == iface]
-            ax.plot(d['time'], d['damage_avg'], lw=2, label=label(df, iface), color=cmap(i%10))
-            #ax.set_yscale('log')
+        draw_lines(ax, 'time', 'damage_avg')
+    ax.set(xlabel='Time [s]', ylabel='Damage D',
+           title='(a) Interface Damage Evolution')
+    ax.legend(fontsize=8, ncol=2 if n_ifaces <= 15 else 1,
+              loc='upper left', framealpha=0.7)
+    ax.grid(True, alpha=0.3)
 
-    ax.set(xlabel='Time [s]', ylabel='Damage D', title='(a) Interface Damage Evolution',
-           ylim=[0, 0.52])
-    ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
-
-    # (b) Traction
+    # (b) Traction (damage-relevant: sqrt(max(Tn,0)² + Tt²))
     ax = axes[0, 1]
-    tcol = 'traction_eff_avg' if 'traction_eff_avg' in df.columns else 'normal_traction_avg'
+    tcol = 'traction_eff_avg' if 'traction_eff_avg' in df.columns else 'tangent_traction_avg'
     if tcol in df.columns:
-        for i, iface in enumerate(interfaces):
-            d = df[df['interface_id'] == iface]
-            ax.plot(d['time'], d[tcol], lw=2, label=label(df, iface), color=cmap(i%10))
-    ax.set(xlabel='Time [s]', ylabel='Traction [MPa]', title='(b) Traction Evolution')
-    ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+        draw_lines(ax, 'time', tcol, clip_y=True)
+    ax.set(xlabel='Time [s]', ylabel='Traction [MPa]',
+           title=r'(b) Damage-Relevant Traction $\sqrt{\langle T_n^+\rangle^2 + \langle T_t\rangle^2}$')
+    ax.legend(fontsize=8, ncol=2 if n_ifaces <= 15 else 1,
+              loc='upper left', framealpha=0.7)
+    ax.grid(True, alpha=0.3)
 
-    # (c) Traction-separation
+    # (c) Traction–Separation
+    # x = delta_eff_avg (µm → nm: ×1000), y = traction_eff_avg
     ax = axes[1, 0]
     jcol = 'delta_eff_avg' if 'delta_eff_avg' in df.columns else 'normal_jump_avg'
     if jcol in df.columns and tcol in df.columns:
-        for i, iface in enumerate(interfaces):
-            d = df[df['interface_id'] == iface]
-            # Data is in mm, convert to nm (×1e6)
-            ax.plot(d[jcol]*1e3, d[tcol], lw=2, label=label(df, iface), color=cmap(i%10))
-    ax.set(xlabel='Separation [nm]', ylabel='Traction [MPa]',
-           title='(c) Traction–Separation')
-    ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+        draw_lines(ax, jcol, tcol, unit_x=1e3, clip_y=True)
+    ax.set(xlabel='δ_eff [nm]', ylabel='Traction [MPa]',
+           title='(c) Traction–Separation (interface averages)')
+    ax.legend(fontsize=8, ncol=2 if n_ifaces <= 15 else 1,
+              loc='upper left', framealpha=0.7)
+    ax.grid(True, alpha=0.3)
 
-    # (d) Mode ratio - SKIP t=0 initialization
+    # (d) Mode ratio φ = δ_t / δ_n⁺  (skip t=0 where φ is undefined)
     ax = axes[1, 1]
     if 'phi_avg' in df.columns:
-        for i, iface in enumerate(interfaces):
-            d = df[df['interface_id'] == iface]
-            # Filter out t=0
-            d_filtered = d[d['time'] > 0]
-            if len(d_filtered) > 0:
-                ax.plot(d_filtered['time'], d_filtered['phi_avg'], lw=2, 
-                       label=label(df, iface), color=cmap(i%10))
-        ax.set(xlabel='Time [s]', ylabel='Mode Ratio φ', title='(d) Mode Mixity')
-        ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+        draw_lines(ax, 'time', 'phi_avg', skip_zero=True)
+        ax.set(xlabel='Time [s]', ylabel=r'Mode Ratio $\varphi = \delta_t / \delta_n^+$',
+               title=r'(d) Mode Mixity  ($\varphi \to \infty$ = pure shear/compression)')
+        ax.set_ylim(0, min(10, df[df['time'] > 0]['phi_avg'].quantile(0.98) * 1.1))
+        ax.legend(fontsize=8, ncol=2 if n_ifaces <= 15 else 1,
+                  loc='upper right', framealpha=0.7)
+        ax.grid(True, alpha=0.3)
     else:
         ax.axis('off')
-        ax.text(0.5, 0.5, 'Mode ratio not available\n(add tangent_jump & tangent_traction to exodus)', 
+        ax.text(0.5, 0.5,
+                'Mode ratio not available\n(add tangent_jump to exodus output)',
                 ha='center', va='center', transform=ax.transAxes, fontsize=10)
 
-    plt.tight_layout()
+    if many:
+        fig.text(0.5, 0.01,
+                 f'Grey lines: all {n_ifaces} interfaces.  '
+                 f'Coloured: top {top_n} by final damage.',
+                 ha='center', fontsize=9, style='italic', color='0.4')
+
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
     out = csv_file.replace('.csv', '_plots.png')
     plt.savefig(out, dpi=150, bbox_inches='tight')
-    print(f"✓ Saved plots: {out}")
+    print(f'✓ Saved plots: {out}')
     plt.show()
 
 
@@ -342,12 +441,13 @@ if __name__ == '__main__':
     parser.add_argument('exodus_file')
     parser.add_argument('--output', '-o', default='per_interface_stats.csv')
     parser.add_argument('--no-plot', action='store_true')
+    parser.add_argument('--top-n', type=int, default=8,
+                        help='Number of most-damaged interfaces to highlight when >15 total')
     args = parser.parse_args()
 
     df = extract_per_interface_stats(args.exodus_file, args.output)
     if df is not None and not args.no_plot:
         try:
-            plot_per_interface(args.output)
+            plot_per_interface(args.output, top_n=args.top_n)
         except Exception as e:
             print(f"Plot failed: {e}")
-
