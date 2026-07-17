@@ -3,9 +3,7 @@
 A multiscale finite element framework for modeling coral aragonite biomechanics and trabecular bone, implemented in the [MOOSE](https://mooseframework.inl.gov/) framework.
 
 [![License: LGPL v2.1](https://img.shields.io/badge/License-LGPL_v2.1-blue.svg)](https://spdx.org/licenses/LGPL-2.1-only.html)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21258387.svg)](https://doi.org/10.5281/zenodo.21258387)
-<!-- DOI resolves once the Zenodo record is published. After publishing you may
-     swap in the concept DOI ("Cite all versions") if you prefer always-latest. -->
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21258386.svg)](https://doi.org/10.5281/zenodo.21258386)
 
 ## Overview
 
