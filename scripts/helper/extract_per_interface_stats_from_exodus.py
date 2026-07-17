@@ -6,7 +6,7 @@ extract_per_interface_stats.py  (PATCHED - side_set version)
 CHANGE from original: reads interfaces from side_sets instead of
 an interface_id element variable.
 
-The exodus side set names:
+Your exodus side set names:
     block0_block1, block0_block2, block0_block3,
     block1_block2, block1_block3, block2_block3
 
@@ -263,7 +263,8 @@ def extract_per_interface_stats(exodus_file, output_csv='per_interface_stats.csv
     return df
 
 
-def plot_per_interface(csv_file='per_interface_stats.csv', top_n=8):
+def plot_per_interface(csv_file='per_interface_stats.csv', top_n=8,
+                       highlight_by='damage_avg'):
     """
     4-panel figure. Automatically adapts legend strategy to the number of interfaces:
       ≤15  : full legend (one entry per interface)
@@ -285,7 +286,9 @@ def plot_per_interface(csv_file='per_interface_stats.csv', top_n=8):
         # Find top_n interfaces by final-step average damage
         t_last = df['time'].max()
         fin    = df[df['time'] == t_last].copy()
-        d_col  = 'damage_avg' if 'damage_avg' in fin.columns else 'traction_eff_avg'
+        d_col  = highlight_by if highlight_by in fin.columns else 'damage_avg'
+        if d_col not in fin.columns:
+            d_col = fin.select_dtypes('number').columns[0]
         top_ids = set(
             fin.nlargest(top_n, d_col)['interface_id'].tolist()
         )
@@ -403,7 +406,7 @@ def plot_per_interface(csv_file='per_interface_stats.csv', top_n=8):
     ax.set(xlabel='δ_eff [nm]', ylabel='Traction [MPa]',
            title='(c) Traction–Separation (interface averages)')
     ax.legend(fontsize=8, ncol=2 if n_ifaces <= 15 else 1,
-              loc='upper left', framealpha=0.7)
+              loc='upper right', framealpha=0.7)
     ax.grid(True, alpha=0.3)
 
     # (d) Mode ratio φ = δ_t / δ_n⁺  (skip t=0 where φ is undefined)
@@ -425,7 +428,7 @@ def plot_per_interface(csv_file='per_interface_stats.csv', top_n=8):
     if many:
         fig.text(0.5, 0.01,
                  f'Grey lines: all {n_ifaces} interfaces.  '
-                 f'Coloured: top {top_n} by final damage.',
+                 f'Coloured: top {top_n} by {d_col}.',
                  ha='center', fontsize=9, style='italic', color='0.4')
 
     plt.tight_layout(rect=[0, 0.03, 1, 1])
@@ -442,12 +445,20 @@ if __name__ == '__main__':
     parser.add_argument('--output', '-o', default='per_interface_stats.csv')
     parser.add_argument('--no-plot', action='store_true')
     parser.add_argument('--top-n', type=int, default=8,
-                        help='Number of most-damaged interfaces to highlight when >15 total')
+                        help='Number of interfaces to highlight when >15 total')
+    parser.add_argument('--highlight-by', default='damage_avg',
+                        choices=['damage_avg', 'damage_max',
+                                 'traction_eff_avg', 'traction_eff_max',
+                                 'delta_eff_avg', 'delta_eff_max',
+                                 'tangent_traction_avg', 'tangent_traction_max'],
+                        help='Metric used to select top-N highlighted interfaces '
+                             '(default: damage_avg)')
     args = parser.parse_args()
 
     df = extract_per_interface_stats(args.exodus_file, args.output)
     if df is not None and not args.no_plot:
         try:
-            plot_per_interface(args.output, top_n=args.top_n)
+            plot_per_interface(args.output, top_n=args.top_n,
+                               highlight_by=args.highlight_by)
         except Exception as e:
             print(f"Plot failed: {e}")
