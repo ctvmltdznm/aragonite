@@ -122,9 +122,9 @@ HomogenizedExponentialCZM::initialSetup()
     << "MD parameters:\n"
     << "  normal_strength   = " << _normal_strength   << " MPa\n"
     << "  shear_strength_s  = " << _shear_strength_s  << " MPa\n"
-    << "  delta_0_normal    = " << _delta_0_normal  * 1e6 << " nm\n"
-    << "  delta_0_tangent   = " << _delta_0_tangent * 1e6 << " nm\n"
-    << "  delta_c           = " << _delta_c         * 1e6 << " nm\n"
+    << "  delta_0_normal    = " << _delta_0_normal  * 1e4 << " nm\n"
+    << "  delta_0_tangent   = " << _delta_0_tangent * 1e4 << " nm\n"
+    << "  delta_c           = " << _delta_c         * 1e4 << " nm\n"
     << "  mu=" << _mu << ", eta=" << _eta << "\n"
     << "Homogenisation:\n"
     << "  quality_std_dev         = " << _quality_std_dev * 100 << "% (within-QP GH spread)\n"
@@ -156,7 +156,9 @@ HomogenizedExponentialCZM::computeInterfaceTractionAndDerivatives()
 
   // ── 1. Smooth Macaulay bracket ────────────────────────────────────────────
   // Replace the hard switch max(0, delta_n) with a smooth approximation.
-  // eps_mac = 1 nm (1e-6 mm) << delta_0 ~ 191 nm.
+  // eps_mac = 1e-6 model-length-units (picometre-scale under this RVE's
+  // micron-scaled convention) << delta_0 ~ 1.9-2.2e-4 model-length-units
+  // (i.e. ~0.19-0.22 nm, matching the MD-fitted values in Table 4).
   // At equilibrium all QPs are far outside the 1 nm transition zone, so the
   // smooth version is indistinguishable from the exact bracket.
   // The derivative factor d_dn enters the Jacobian via the chain rule.
@@ -507,7 +509,7 @@ HomogenizedExponentialCZM::solveForFailureDisplacement(Real ratio, Real exponent
     if (std::abs(df) < 1e-12) mooseError("Cannot solve for failure displacement");
     Real rn = r - f / df;
     if (rn < 1.0)  rn = 0.5 * (r + 1.0);
-    if (rn > 20.0) rn = 20.0;
+    if (rn > 5000.0) rn = 5000.0;
     r = rn;
   }
   if (r <= 1.0) mooseError("Failure displacement solution failed");
