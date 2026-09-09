@@ -15,6 +15,8 @@ public:
   virtual void initQpStatefulProperties() override;
   virtual void propagateQpStatefulProperties() override;
   virtual bool requiresIsotropicTensor() override { return false; }
+//  virtual TangentCalculationMethod getTangentCalculationMethod() override
+//  { return TangentCalculationMethod::FULL; }
 
 protected:
   virtual void updateState(RankTwoTensor & strain_increment,
@@ -169,4 +171,7 @@ protected:
   MaterialProperty<Real> & _yield_function;
   MaterialProperty<Real> & _return_mapping_stage;
   MaterialProperty<Real> & _return_mapping_iterations;
+
+  // Verify positive semidefiniteveness of 4th tensor
+  void checkYieldSurfaceConvexity() const;
 };
