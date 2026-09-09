@@ -427,21 +427,28 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   _F_matrix[4][4] = 1.0 / (_tau_xz_max * _tau_xz_max);
   _F_matrix[5][5] = 1.0 / (_tau_xy_max * _tau_xy_max);
   
-  // Off-diagonal coupling (if any zeta != 0)
+  // Off-diagonal coupling: Schwiedrzik, Wolfram & Zysset (2013), Eq. 47 (general orthotropy).
+  // F_ij = -zeta_ij * F_ii, reference index = lower-numbered index of the pair (i < j).
+  // NOTE: this is NOT symmetric in i,j as written -- F_12 uses F_11, F_13 uses F_11,
+  // F_23 uses F_22. This matches Eq. 55/56 convexity bounds exactly; it is only
+  // numerically equivalent to a sqrt(F_ii*F_jj) form for the fabric-power-law special
+  // case (Eq. 43-44), which is why fabric mode below is unaffected by this change.
   if (std::abs(_zeta12) > 1e-12 || std::abs(_zeta13) > 1e-12 || std::abs(_zeta23) > 1e-12) {
-  
-    // X-Y coupling (1-2)
-    _F_matrix[0][1] = -_zeta12 * std::sqrt(_F_matrix[0][0] * _F_matrix[1][1]);
+
+    // X-Y coupling (1-2), referenced to F_11
+    _F_matrix[0][1] = -_zeta12 * _F_matrix[0][0];
     _F_matrix[1][0] = _F_matrix[0][1];  // Symmetric
-  
-    // X-Z coupling (1-3)
-    _F_matrix[0][2] = -_zeta13 * std::sqrt(_F_matrix[0][0] * _F_matrix[2][2]);
+
+    // X-Z coupling (1-3), referenced to F_11
+    _F_matrix[0][2] = -_zeta13 * _F_matrix[0][0];
     _F_matrix[2][0] = _F_matrix[0][2];  // Symmetric
-  
-    // Y-Z coupling (2-3)
-    _F_matrix[1][2] = -_zeta23 * std::sqrt(_F_matrix[1][1] * _F_matrix[2][2]);
+
+    // Y-Z coupling (2-3), referenced to F_22
+    _F_matrix[1][2] = -_zeta23 * _F_matrix[1][1];
     _F_matrix[2][1] = _F_matrix[1][2];  // Symmetric
   }
+
+  checkYieldSurfaceConvexity();
   
   // Linear term for tension/compression asymmetry
   _f_lin_vector[0] = (sigma_c_xx - sigma_t_xx) / (2.0 * sigma_c_xx * sigma_t_xx);  // xx
@@ -459,6 +466,39 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   Real test_quadric = test_stress * test_stress * _F_matrix[5][5];
   Moose::out << "*** If stress=2427: quadric=" << test_quadric << ", phi=" << std::sqrt(test_quadric) << "\n";
   */
+}
+
+void
+OrthotropicPlasticityStressUpdate::checkYieldSurfaceConvexity() const
+{
+  const Real F11 = _F_matrix[0][0];
+  const Real F22 = _F_matrix[1][1];
+  const Real F33 = _F_matrix[2][2];
+
+  // Eq. 55: |zeta_ij| <= |F_jj / F_ii|, reference index = lower index of the pair
+  if (std::abs(_zeta12) > std::abs(F22 / F11) + 1e-10)
+    mooseError("OrthotropicPlasticityStressUpdate: zeta12 = ", _zeta12,
+               " violates convexity bound |zeta12| <= F22/F11 = ", std::abs(F22 / F11),
+               " (Schwiedrzik et al. 2013, Eq. 55)");
+  if (std::abs(_zeta13) > std::abs(F33 / F11) + 1e-10)
+    mooseError("OrthotropicPlasticityStressUpdate: zeta13 = ", _zeta13,
+               " violates convexity bound |zeta13| <= F33/F11 = ", std::abs(F33 / F11),
+               " (Schwiedrzik et al. 2013, Eq. 55)");
+  if (std::abs(_zeta23) > std::abs(F33 / F22) + 1e-10)
+    mooseError("OrthotropicPlasticityStressUpdate: zeta23 = ", _zeta23,
+               " violates convexity bound |zeta23| <= F33/F22 = ", std::abs(F33 / F22),
+               " (Schwiedrzik et al. 2013, Eq. 55)");
+
+  // Eq. 56: cubic determinant condition on the {1,2,3} normal-stress block
+  const Real det_condition = F22 * F22 * F33 * F33
+                            - F11 * F11 * F33 * F33 * _zeta12 * _zeta12
+                            - F11 * F11 * F22 * F22 * _zeta13 * _zeta13
+                            + 2.0 * F11 * F11 * F22 * F22 * _zeta12 * _zeta13 * _zeta23
+                            - F22 * F22 * F22 * F22 * _zeta23 * _zeta23;
+  if (det_condition < -1e-10)
+    mooseError("OrthotropicPlasticityStressUpdate: zeta12/13/23 = ", _zeta12, ", ", _zeta13,
+               ", ", _zeta23, " violate convexity determinant condition = ", det_condition,
+               " (Schwiedrzik et al. 2013, Eq. 56)");
 }
 
 void
@@ -599,6 +639,7 @@ OrthotropicPlasticityStressUpdate::updateState(
   // Compute trial stress in material coordinates (now consistent!)
   RankTwoTensor stress_trial_material = stress_old_material + 
                                         elasticity_tensor_material * strain_increment_material;
+  //RankTwoTensor stress_trial_material = rotateToMaterial(stress_new, R);
 
   // Get compliance tensor in material coordinates
   RankFourTensor C_inv_material = elasticity_tensor_material.invSymm();
@@ -991,7 +1032,7 @@ OrthotropicPlasticityStressUpdate::performNewtonRaphson(
     RankTwoTensor DYDS = DSY;
     Real DYDK = -dr_i;  // UMAT: DRAD = -dr/dκ, but my dr_i = +dr/dκ, so use -dr_i
     //Real DYDK = dr_i; // OLD--wrong apparently
-    
+
     if (_viscosity_mode != ViscosityMode::RATE_INDEPENDENT && dt > 1e-16 && HI > 1e-14) {
       RankTwoTensor dvisc_ds;
       Real dvisc_dk;
