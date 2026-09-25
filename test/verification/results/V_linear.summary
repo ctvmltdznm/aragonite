@@ -1,0 +1,6 @@
+--- results/V_linear.log
+    attempts 1203   converged 1200   failed 3   time reached 120   dt min/max 1e-12/0.1
+    Newton its/step  total 2400   histogram  2:1200
+    nonlinear DIVERGED: {'DIVERGED_LINE_SEARCH': 3}
+    first failure: step 1201 t=120 dt=2.54e-12  |R|: 5.438e-11, 6.232e-12, 3.619e-12, 3.258e-12, 3.079e-12, 3.013e-12
+    C_ep fallbacks 0   Newton->Primal 0

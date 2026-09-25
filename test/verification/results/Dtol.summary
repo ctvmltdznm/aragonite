@@ -1,0 +1,27 @@
+--- results/Dtol_full.log
+    attempts 3   converged 3   failed 0   time reached 0.3   dt min/max 0.1/0.1
+    Newton its/step  total 73   histogram  22:1  25:1  26:1
+    plastic steps (>=3 its): n=3  median 25  max 26
+    convergence order p  median 1.34   last-step contraction median 0.0466   (linear)
+    linear DIVERGED:    {'DIVERGED_ITS': 1}
+    C_ep fallbacks 0   Newton->Primal 0
+--- results/D_full.log  [reference]
+    attempts 1   converged 0   failed 0   time reached nan   dt min/max 0.1/0.1
+    C_ep fallbacks 0   Newton->Primal 0
+--- CSV  ref=results/D_full.csv  test=results/Dtol_full.csv
+    common time points 1  (ref 1, test 4)   last common t=0
+    ok   max_vonmises               max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   plastic_strain_avg         max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   strain_xx                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   strain_xy                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   strain_xz                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   strain_yy                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   strain_yz                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   strain_zz                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   stress_xx                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   stress_xy                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   stress_xz                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   stress_yy                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   stress_yz                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    ok   stress_zz                  max rel 0.00e+00  max abs 0.00e+00  at t=0
+    VERDICT: PASS

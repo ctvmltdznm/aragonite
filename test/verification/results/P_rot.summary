@@ -1,0 +1,18 @@
+--- results/P_rot.log
+    attempts 1203   converged 1200   failed 3   time reached 120   dt min/max 1e-12/0.1
+    Newton its/step  total 2401   histogram  2:1199  3:1
+    plastic steps (>=3 its): n=1  median 3  max 3
+    convergence order p  median 0.67   last-step contraction median 0.000206   (linear)
+    nonlinear DIVERGED: {'DIVERGED_LINE_SEARCH': 3}
+    first failure: step 1201 t=120 dt=2.54e-12  |R|: 4.170e-11, 4.529e-12, 4.368e-12, 4.316e-12, 4.249e-12, 4.094e-12
+    C_ep fallbacks 0   Newton->Primal 5
+--- CSV  ref=results/B_full.csv  test=results/P_rot.csv
+    common time points 1201  (ref 1201, test 1201)   last common t=120
+    DIFF plastic_strain             max rel 3.17e-03  max abs 7.45e-05  at t=58.3   first > tol at t=54
+    ok   strain_xx                  max rel 4.51e-07  max abs 5.11e-08  at t=120
+    DIFF strain_yy                  max rel 1.19e-03  max abs 2.67e-05  at t=120   first > tol at t=54
+    DIFF strain_zz                  max rel 4.10e-03  max abs 3.80e-05  at t=120   first > tol at t=54
+    DIFF stress_xx                  max rel 7.22e-04  max abs 6.54e+00  at t=58.1   first > tol at t=53.9
+    DIFF stress_yy                  max rel 1.45e-03  max abs 1.18e-03  at t=120   first > tol at t=53.9
+    DIFF stress_zz                  max rel 2.43e-03  max abs 4.53e-03  at t=120   first > tol at t=53.9
+    VERDICT: FAIL
