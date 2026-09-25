@@ -1,0 +1,23 @@
+--- results/B_full.log
+    attempts 1201   converged 1201   failed 0   time reached 120   dt min/max 2.54e-12/0.1
+    Newton its/step  total 6879   histogram  2:4  3:58  4:172  5:300  6:160  7:507
+    plastic steps (>=3 its): n=1197  median 6  max 7
+    convergence order p  median 1.00   last-step contraction median 0.0544   (linear)
+    C_ep fallbacks 0   Newton->Primal 0
+--- results/B_ref.log  [reference]
+    attempts 1201   converged 1201   failed 0   time reached 120   dt min/max 2.54e-12/0.1
+    Newton its/step  total 9655   histogram  2:4  3:58  4:172  5:300  6:4  7:1  8:2  9:1  10:21  11:637  12:1
+    plastic steps (>=3 its): n=1197  median 11  max 12
+    convergence order p  median 1.00   last-step contraction median 0.188   (linear)
+    C_ep fallbacks 0   Newton->Primal 0
+--- Newton total: test 6879 vs reference 9655  (1.4x fewer)
+--- CSV  ref=results/B_ref.csv  test=results/B_full.csv
+    common time points 1201  (ref 1201, test 1201)   last common t=120
+    ok   plastic_strain             max rel 2.23e-12  max abs 5.24e-14  at t=56.1
+    ok   strain_xx                  max rel 8.83e-14  max abs 1.00e-14  at t=115.6
+    ok   strain_yy                  max rel 2.76e-12  max abs 6.20e-14  at t=56.1
+    ok   strain_zz                  max rel 1.09e-11  max abs 1.01e-13  at t=56.1
+    ok   stress_xx                  max rel 3.31e-13  max abs 3.00e-09  at t=53.9
+    ok   stress_yy                  max rel 1.57e-08  max abs 1.28e-08  at t=56.1
+    ok   stress_zz                  max rel 7.02e-09  max abs 1.31e-08  at t=56.1
+    VERDICT: PASS

@@ -1,0 +1,10 @@
+--- results/Ddt_full.log
+    attempts 4   converged 4   failed 0   time reached 0.1   dt min/max 0.025/0.025
+    Newton its/step  total 50   histogram  10:1  11:1  12:1  17:1
+    plastic steps (>=3 its): n=4  median 11.5  max 17
+    convergence order p  median 2.34   last-step contraction median 0.000616   (quadratic)
+    linear DIVERGED:    {'DIVERGED_ITS': 1}
+    C_ep fallbacks 0   Newton->Primal 0
+--- results/D_full.log  [reference]
+    attempts 1   converged 0   failed 0   time reached nan   dt min/max 0.1/0.1
+    C_ep fallbacks 0   Newton->Primal 0

@@ -1,7 +1,9 @@
-// CORRECTED Orthotropic Plasticity - UMAT Style (Unnormalized)
-// CRITICAL FIX: f = sqrt(σ:F:σ) + f_lin·σ - r(κ)*σ_0 (NOT sqrt of sum!)
-// Supports both explicit strengths and fabric-based orthotropy (Schwiedrzik et al. 2013)
-// Now with optional density scaling for explicit mode
+// Orthotropic quadric plasticity, port of UMAT_QUADRIC_PRIMAL_Major.f
+// Yield: f = sqrt(s:F:s) + f_lin.s - r(kappa) + viscous term
+// Two-stage return mapping (Newton, then Primal CPPA fallback), consistent
+// elastoplastic tangent. Requires use_finite_deform_jacobian = true in the
+// QuasiStatic physics when strain = FINITE.
+// See UMAT_TO_MOOSE_MAPPING.md for conventions and known differences.
 
 #pragma once
 #include "StressUpdateBase.h"
@@ -15,8 +17,8 @@ public:
   virtual void initQpStatefulProperties() override;
   virtual void propagateQpStatefulProperties() override;
   virtual bool requiresIsotropicTensor() override { return false; }
-//  virtual TangentCalculationMethod getTangentCalculationMethod() override
-//  { return TangentCalculationMethod::FULL; }
+  virtual TangentCalculationMethod getTangentCalculationMethod() override
+  { return TangentCalculationMethod::FULL; }
 
 protected:
   virtual void updateState(RankTwoTensor & strain_increment,
@@ -170,7 +172,15 @@ protected:
   // Diagnostics
   MaterialProperty<Real> & _yield_function;
   MaterialProperty<Real> & _return_mapping_stage;
+
   MaterialProperty<Real> & _return_mapping_iterations;
+
+  // Diagnostic: qps where the consistent tangent was unusable and the elastic
+  // tensor was substituted. Only the first few are reported. Not a material
+  // property on purpose: the tangent is only computed during Jacobian
+  // assembly, and material-property output is evaluated during residuals.
+  unsigned int _tangent_fallbacks = 0;
+  unsigned int _primal_fallbacks = 0;
 
   // Verify positive semidefiniteveness of 4th tensor
   void checkYieldSurfaceConvexity() const;

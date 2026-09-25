@@ -1,0 +1,8 @@
+--- viscosity_mode = polynomial: final stress_xx at strain_xx = 0.12
+    rate-independent   stress_xx = 10616.661731   strain_xx = 0.113329   overstress  +0.000%
+    rate x 0.1         stress_xx = 10621.806041   strain_xx = 0.113329   overstress  +0.048%
+    rate x 1           stress_xx = 10664.032636   strain_xx = 0.113329   overstress  +0.446%
+    rate x 1, dt/2     stress_xx = 10664.031738   strain_xx = 0.113329   overstress  +0.446%
+    rate x 10          stress_xx = 10932.094253   strain_xx = 0.113329   overstress  +2.971%
+    CHECK 1  'rate x 1' and 'rate x 1, dt/2' must agree to ~1e-6 relative
+    CHECK 2  overstress must increase monotonically with rate

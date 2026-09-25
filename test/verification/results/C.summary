@@ -1,0 +1,33 @@
+--- results/C_full.log
+    attempts 1501   converged 1501   failed 0   time reached 150   dt min/max 4.23e-12/0.1
+    Newton its/step  total 7085   histogram  2:8  3:103  4:287  5:1006  6:97
+    plastic steps (>=3 its): n=1493  median 5  max 6
+    convergence order p  median 0.98   last-step contraction median 0.0293   (linear)
+    C_ep fallbacks 0   Newton->Primal 0
+--- results/C_ref.log  [reference]
+    attempts 1501   converged 1501   failed 0   time reached 150   dt min/max 4.23e-12/0.1
+    Newton its/step  total 11801   histogram  1:1  2:7  3:103  4:287  5:387  6:1  8:1  9:14  10:146  11:350  12:18  13:5  14:52  15:129
+    plastic steps (>=3 its): n=1493  median 5  max 15
+    convergence order p  median 1.00   last-step contraction median 0.0447   (linear)
+    C_ep fallbacks 0   Newton->Primal 0
+--- Newton total: test 7085 vs reference 11801  (1.7x fewer)
+--- CSV  ref=results/C_ref.csv  test=results/C_full.csv
+    common time points 901  (ref 901, test 1501)   last common t=90
+    ok   plastic_strain_global      max rel 1.86e-11  max abs 9.92e-14  at t=84.8
+    ok   plastic_strain_grain1      max rel 6.13e-08  max abs 3.27e-10  at t=90
+    ok   plastic_strain_grain2      max rel 6.13e-08  max abs 3.27e-10  at t=90
+    ok   strain_diff                max rel 9.21e-01  max abs 6.43e-10  at t=90  (abs floor)
+    ok   strain_xx_global           max rel 4.56e-14  max abs 2.01e-15  at t=79.1
+    ok   strain_xx_grain1           max rel 7.31e-09  max abs 3.22e-10  at t=90
+    ok   strain_xx_grain2           max rel 7.31e-09  max abs 3.22e-10  at t=90
+    ok   stress_diff                max rel 9.13e-01  max abs 5.27e-07  at t=90  (abs floor)
+    ok   stress_xx_global           max rel 3.19e-12  max abs 1.69e-08  at t=83.3
+    ok   stress_xx_grain1           max rel 4.97e-11  max abs 2.63e-07  at t=90
+    ok   stress_xx_grain2           max rel 4.98e-11  max abs 2.64e-07  at t=90
+    VERDICT: PASS
+--- CSV  ref=results/C_ref.csv  test=results/C_full.csv
+    common time points 1501  (ref 1501, test 1501)   last common t=150
+    DIFF plastic_strain_global      max rel 2.50e-02  max abs 1.26e-03  at t=108.9   first > tol at t=102.8
+    DIFF strain_xx_global           max rel 1.04e-03  max abs 7.43e-05  at t=150   first > tol at t=104.3
+    DIFF stress_xx_global           max rel 3.09e-02  max abs 1.63e+02  at t=109   first > tol at t=102.4
+    VERDICT: FAIL

@@ -1,0 +1,8 @@
+--- viscosity_mode = exponential: final stress_xx at strain_xx = 0.12
+    rate-independent   stress_xx = 10616.661731   strain_xx = 0.113329   overstress  +0.000%
+    rate x 0.1         stress_xx = 10621.862005   strain_xx = 0.113329   overstress  +0.049%
+    rate x 1           stress_xx = 10668.801598   strain_xx = 0.113329   overstress  +0.491%
+    rate x 1, dt/2     stress_xx = 10668.800502   strain_xx = 0.113329   overstress  +0.491%
+    rate x 10          stress_xx = 11152.254716   strain_xx = 0.113329   overstress  +5.045%
+    CHECK 1  'rate x 1' and 'rate x 1, dt/2' must agree to ~1e-6 relative
+    CHECK 2  overstress must increase monotonically with rate

@@ -6,8 +6,8 @@
 #include "OrthotropicPlasticityStressUpdate.h"
 #include "libmesh/dense_matrix.h"
 #include "libmesh/dense_vector.h"
-
-#include "VoigtHelpers.h"
+#include "MooseException.h"
+#include "MandelHelpers.h"
 
 using namespace libMesh;
 
@@ -148,7 +148,11 @@ OrthotropicPlasticityStressUpdate::validParams()
   params.addParam<MooseEnum>("viscosity_mode", viscosity_mode,
                             "Viscoplastic regularization mode");
   params.addParam<Real>("m", 0.001,
-                    "Viscosity exponent for non-linear viscosity models");
+      "Viscosity shape parameter. Meaning depends on viscosity_mode: divisor "
+      "for exponential and logarithmic, curvature for polynomial, RECIPROCAL "
+      "EXPONENT for powerlaw (visc ~ x^(1/m)). The default 0.001 is sensible "
+      "only for the divisor modes; powerlaw needs m >~ 1 or it underflows to "
+      "rate-independent behaviour.");
 
   return params;
 }
@@ -219,7 +223,7 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
     // Diagnostics
     _yield_function(declareProperty<Real>("yield_function")),
     _return_mapping_stage(declareProperty<Real>("return_mapping_stage")),
-    _return_mapping_iterations(declareProperty<Real>("return_mapping_iterations"))
+    _return_mapping_iterations(declareProperty<Real>("return_mapping_iterations"))//,
 {
   // ==========================================================================
   // COMPUTE EFFECTIVE YIELD PARAMETERS
@@ -397,7 +401,11 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   _f_lin_vector.resize(6, 0.0);
   
   // Build quadric yield surface from yield strengths
-  // F matrix for orthotropic yield (Voigt notation)
+  // PLAIN COMPONENT 6-vector, NOT Mandel: _F_matrix acts on [s_xx s_yy s_zz
+  // s_yz s_xz s_xy] with F[5][5] = 1/tau_xy^2, so SFFS is a plain 6-sum and
+  // comes out correct. The conversion of the RESULT to a tensor is where the
+  // sqrt(2)/2 factors appear (see below). Do not replace with the Mandel
+  // helpers.
   // Based on Hill-type criterion with tension/compression asymmetry
   
   // Compute F matrix components
@@ -598,6 +606,11 @@ OrthotropicPlasticityStressUpdate::rotateElasticityTensor(
 // MAIN UPDATE STATE FUNCTION
 // ============================================================================
 
+// Forward declaration — defined below after manualInvert7x7
+static void manualInvert6x6(const std::vector<std::vector<Real>> & A,
+                             std::vector<std::vector<Real>> & Ainv);
+
+
 void
 OrthotropicPlasticityStressUpdate::updateState(
     RankTwoTensor & strain_increment,
@@ -668,10 +681,12 @@ OrthotropicPlasticityStressUpdate::updateState(
                                  kappa_old, damage_old, dt,
                                  stress_return, delta_kappa, 
                                  kappa_new, damage_new, iterations);
-  
+
   // If Newton fails and Primal is enabled, try Primal CPPA
   if (!success && _use_primal_cpp) {
-    mooseWarning("Newton failed at qp=", _qp, ", switching to Primal CPPA");
+    if (_primal_fallbacks++ < 5)
+      mooseWarning("Newton failed at qp=", _qp, " (elem ", _current_elem->id(),
+                   "), switching to Primal CPPA");
     iterations = 0;
     success = performPrimalCPP(stress_trial_material, C_inv_material,
                                kappa_old, damage_old, dt,
@@ -680,9 +695,15 @@ OrthotropicPlasticityStressUpdate::updateState(
   }
   
   if (!success) {
-    mooseError("Both Newton and Primal CPPA failed at qp=", _qp);
+    // MooseException instead of mooseError: MOOSE catches this, marks the solve
+    // failed and cuts the time step, rather than aborting the job. This is the
+    // equivalent of the UMAT's PNEWDT = 0.5 (UMAT line 1855).
+    throw MooseException("OrthotropicPlasticityStressUpdate: return mapping failed at qp=",
+                         _qp, " (elem ", _current_elem->id(),
+                         "), |stress_trial| = ", stress_trial_material.L2norm(),
+                         ", kappa_old = ", kappa_old, ", dt = ", dt);
   }
-  
+
   // Rotate stress back to global coordinates - for constistency with angles in elastic
   stress_new = rotateToGlobal(stress_return, R);
 
@@ -708,78 +729,145 @@ OrthotropicPlasticityStressUpdate::updateState(
   _plastic_strain[_qp] = _plastic_strain_old[_qp] + plastic_strain_increment;
   _damage[_qp] = damage_new;
   _return_mapping_iterations[_qp] = iterations;
-  
-  // Consistent elastoplastic tangent (UMAT lines 1840-1848, Sherman-Morrison)
-  //
-  // Elastic step:  C_ep = C  (exact)
-  // Plastic step:  C_ep = SSSA - (SSSA·dRRdk ⊗ SSSA·NP)
-  //                               / (NP·SSSA·dRRdk + dYdk/||dYds||)
-  //   where SSSA = inv(-dRR/dS) = inv( C_inv/(1-D) + dkappa·dNP/dS )
-  //         NP   = yield gradient direction at converged stress
-  //         dRRdk = -NP  (residual derivative w.r.t. kappa, elastic-only damage)
-  //         dYdk  = dr/dkappa  (hardening/softening slope)
-  //
-  // All quantities are in material frame; rotate C_ep back to global at end.
-  if (compute_full_tangent_operator) {
-    if (delta_kappa <= 0.0) {
-      // Elastic step — tangent is exactly C (already in global frame)
-      tangent_operator = elasticity_tensor;
-    } else {
-      // Plastic step — compute consistent tangent in material frame
-      // DSY_final, HI_final, NP_final already computed above
-      Real dr_new = computeSofteningDerivative(kappa_new);
-      Real D_new  = damage_new;
 
-      // Yield Hessian and gradient-of-gradient-direction
-      RankFourTensor DDSY_final  = computeYieldHessian(stress_return);
-      RankTwoTensor  DHDS_final  = (DDSY_final * DSY_final) / HI_final;
+  // ── Consistent elastoplastic tangent (UMAT lines 1840-1848) ────────────────
+  // Computed in the same call in which it is requested (see
+  // ComputeMultipleInelasticStressBase::computeAdmissibleState). All 6x6/6x1
+  // algebra is MANDEL, so matvec, inversion, dot and norm are the tensor ops.
+  if (compute_full_tangent_operator)
+  {
+    if (delta_kappa > 0.0)
+    {
+      const Real dr_new = computeSofteningDerivative(kappa_new);
+      const Real D_new  = damage_new;
 
-      // DYDS = yield gradient (rate-independent → no viscous correction)
-      // DYDK = dr/dkappa
-      RankTwoTensor  DYDS_final  = DSY_final;
-      // Real           DYDK_final  = dr_new; // OLD--wrong apparently
-      Real           DYDK_final  = -dr_new;
+      const RankFourTensor DDSY_final = computeYieldHessian(stress_return);
+      const RankTwoTensor  DHDS_final = (DDSY_final * DSY_final) / HI_final;
 
-      // dNP/dS = (DDSY·HI - DSY⊗DHDS) / HI^2
-      RankFourTensor DNPDS_final = (DDSY_final * HI_final
-                                  - dyadicProduct(DSY_final, DHDS_final))
-                                  / (HI_final * HI_final);
+      // Consistency row, built exactly as in the return map: yield gradient
+      // plus viscous corrections. On a perfect-plasticity plateau (dr = 0)
+      // the viscous term is the only resistance to plastic flow; without it
+      // the tangent is singular along the flow direction.
+      RankTwoTensor DYDS_final = DSY_final;
+      Real          DYDK_final = -dr_new;
+      if (_viscosity_mode != ViscosityMode::RATE_INDEPENDENT && dt > 1e-16 && HI_final > 1e-14)
+      {
+        RankTwoTensor dvisc_ds;
+        Real dvisc_dk;
+        computeViscosityDerivatives(delta_kappa, HI_final, DHDS_final, 0.0, dt,
+                                    dvisc_ds, dvisc_dk);
+        DYDS_final += dvisc_ds;
+        DYDK_final += dvisc_dk;
+      }
 
-      // dRR/dS = -C_inv/(1-D) - dkappa·dNP/dS
-      RankFourTensor DRRDS_final = -C_inv_material / (1.0 - D_new)
-                                 - DNPDS_final * delta_kappa;
+      const RankFourTensor DNPDS_final =
+          (DDSY_final * HI_final - dyadicProduct(DSY_final, DHDS_final)) / (HI_final * HI_final);
+      const RankFourTensor DRRDS_final =
+          -C_inv_material / (1.0 - D_new) - DNPDS_final * delta_kappa;
 
-      // dRR/dk = -NP  (damage contribution omitted — negligible for small damage)
-      RankTwoTensor  DRRDK_final = -NP_final;
+      // Damage contributions. D = D(kappa_old + delta_kappa), so both the
+      // 1/(1-D) factor and the (D-D0)/(1-D) term depend on delta_kappa:
+      //   dRR/d(dk)   -= dD/(1-D)^2 * [ C^-1(sigma - sigma_tr) + (1-D0)*C^-1 sigma_tr ]
+      //   dRR/dsigma_tr = C^-1 * (1 - D + D0)/(1 - D)   ->  prefactor g on C_ep
+      // Gated exactly as in the return map so the tangent matches the
+      // residual it differentiates.
+      // UNTESTED: use_damage = false in every test run so far. Verify with a
+      // finite-difference check of C_ep at a state with D > 0 before trusting
+      // it (perturb strain_increment, re-run the return map, compare columns).
+      RankTwoTensor DRRDK_final = -NP_final;
+      Real g_damage = 1.0;
+      if (_use_damage && D_new > 1e-6 && D_new < 0.99)
+      {
+        const Real dD_new = computeDamageDerivative(kappa_new);
+        const Real omd = 1.0 - D_new;
+        const RankTwoTensor A = C_inv_material * (stress_return - stress_trial_material);
+        const RankTwoTensor B = C_inv_material * stress_trial_material;
+        DRRDK_final -= (dD_new / (omd * omd)) * (A + (1.0 - damage_old) * B);
+        g_damage = (1.0 - D_new + damage_old) / omd;
+      }
 
-      // SSSA = inv(-dRR/dS)
-      RankFourTensor SSSA = (-DRRDS_final).invSymm();
+      std::vector<std::vector<Real>> neg_DRRDS_m;
+      std::vector<std::vector<Real>> SSSA_m(6, std::vector<Real>(6, 0.0));
+      rankFourToMandel(-DRRDS_final, neg_DRRDS_m);
+      const bool inverted = invertMatrix6x6(neg_DRRDS_m, SSSA_m);
 
-      // Sherman-Morrison rank-1 update
-      Real DYDS_norm = DYDS_final.L2norm();
-      if (DYDS_norm < 1e-14) DYDS_norm = 1e-14;
+      std::vector<Real> DRRDK_m(6), DYDS_m(6);
+      tensorToMandel(DRRDK_final, DRRDK_m);
+      tensorToMandel(DYDS_final,  DYDS_m);
 
-      RankTwoTensor SSSA_dRRdk = SSSA * DRRDK_final;
-      RankTwoTensor SSSA_NP    = SSSA * NP_final;
-      Real denom = (NP_final * SSSA_dRRdk).trace()
-                 + DYDK_final / DYDS_norm;
+      // dsigma = SSSA.deps + SSSA.DRRDK dDk,   DYDS:dsigma + DYDK dDk = 0
+      // => C_ep = SSSA - (SSSA.DRRDK) x (SSSA^T.DYDS) / (DYDS.SSSA.DRRDK + DYDK)
+      // SSSA is not symmetric (DNPDS is a one-sided projection), hence the
+      // transpose. Uses DYDS directly rather than UMAT 1836's NP and
+      // DYDK/|DYDS|, which is exact only when DYDS is parallel to NP (i.e.
+      // rate-independent); with viscosity it is not.
+      std::vector<Real> SSSA_dRRdk(6, 0.0), SSSAt_DYDS(6, 0.0);
+      matVecMult6(SSSA_m, DRRDK_m, SSSA_dRRdk);
+      for (int a = 0; a < 6; a++)
+        for (int b = 0; b < 6; b++)
+          SSSAt_DYDS[b] += SSSA_m[a][b] * DYDS_m[a];
 
-      RankFourTensor C_ep_material;
-      if (std::abs(denom) > 1e-14)
-        C_ep_material = SSSA
-                      - dyadicProduct(SSSA_dRRdk, SSSA_NP) * (1.0 / denom);
+      const Real denom_a = dotProduct6(DYDS_m, SSSA_dRRdk);
+      const Real denom   = denom_a + DYDK_final;
+
+      // No symmetrisation: for rate-independent associated flow the exact
+      // C_ep is symmetric by itself; with viscosity it genuinely is not.
+      std::vector<std::vector<Real>> C_el_m;
+      rankFourToMandel(elasticity_tensor_material, C_el_m);
+      Real c_el_max = 0.0;
+      for (int a = 0; a < 6; a++)
+        for (int b = 0; b < 6; b++)
+          c_el_max = std::max(c_el_max, std::abs(C_el_m[a][b]));
+
+      const char * reason = nullptr;
+      if (!inverted)
+        reason = "singular -DRRDS";
+      else if (!std::isfinite(denom) ||
+               std::abs(denom) <= 1e-12 * (std::abs(denom_a) + std::abs(DYDK_final)))
+        reason = "vanishing denominator";
+
+      std::vector<std::vector<Real>> C_ep_m = SSSA_m;
+      if (!reason)
+        for (int a = 0; a < 6; a++)
+          for (int b = 0; b < 6; b++)
+            C_ep_m[a][b] -= SSSA_dRRdk[a] * SSSAt_DYDS[b] / denom;
+
+      // dRR/dsigma_trial = C^-1 * (1 - D + D0)/(1 - D), so the whole tangent
+      // carries that factor. g_damage is 1 unless use_damage is on.
+      if (g_damage != 1.0)
+        for (int a = 0; a < 6; a++)
+          for (int b = 0; b < 6; b++)
+            C_ep_m[a][b] *= g_damage;
+
+      for (int a = 0; a < 6 && !reason; a++)
+        for (int b = 0; b < 6 && !reason; b++)
+        {
+          if (!std::isfinite(C_ep_m[a][b]))
+            reason = "non-finite entry";
+          else if (std::abs(C_ep_m[a][b]) > 10.0 * c_el_max)
+            reason = "entry exceeds 10x elastic stiffness";
+        }
+
+      if (!reason)
+      {
+        RankFourTensor C_ep_material;
+        mandelToRankFour(C_ep_m, C_ep_material);
+        tangent_operator = rotateElasticityTensor(C_ep_material, R);
+      }
       else
-        C_ep_material = elasticity_tensor_material;  // degenerate fallback
-
-      // Rotate C_ep back to global frame (inverse of material→global rotation)
-      //tangent_operator = rotateElasticityTensor(C_ep_material, R);
-      RankFourTensor C_ep_sym = C_ep_material;
-      for (unsigned i = 0; i < 3; i++)
-        for (unsigned j = 0; j < 3; j++)
-          for (unsigned k = 0; k < 3; k++)
-            for (unsigned l = 0; l < 3; l++)
-              C_ep_sym(i,j,k,l) = 0.5*(C_ep_material(i,j,k,l) + C_ep_material(k,l,i,j));
-      tangent_operator = rotateElasticityTensor(C_ep_sym, R);
+      {
+        tangent_operator = elasticity_tensor;
+        if (_tangent_fallbacks++ < 5)
+          mooseWarning("C_ep fallback to elastic (", reason, ") at elem ",
+                       _current_elem->id(), " qp ", _qp,
+                       ", delta_kappa = ", delta_kappa, ", denom = ", denom);
+      }
+    }
+    else
+    {
+      // Elastic step. Must never be skipped: the caller's tangent storage is a
+      // plain member, not per-qp, so an unwritten tangent reuses the last qp's.
+      tangent_operator = elasticity_tensor;
     }
   }
 }
@@ -812,8 +900,9 @@ void manualInvert7x7(const std::vector<std::vector<Real>> & A,
     }
     
     if (amax < 1e-14)
-      mooseError("Singular matrix in 7x7 inversion");
-    
+      throw MooseException("OrthotropicPlasticityStressUpdate: singular 7x7 Jacobian in "
+                           "return mapping");
+
     // Swap rows
     if (imax != i) {
       std::swap(mat[i], mat[imax]);
@@ -842,6 +931,36 @@ void manualInvert7x7(const std::vector<std::vector<Real>> & A,
   Ainv = inv;
 }
 
+// General 6×6 LU inversion — no symmetry assumed (UMAT: CALL MIGS(-DRRDS,6,SSSA))
+// invSymm() would be WRONG for SSSA because DRRDS lacks major symmetry.
+static void manualInvert6x6(const std::vector<std::vector<Real>> & A,
+                             std::vector<std::vector<Real>> & Ainv)
+{
+  const int n = 6;
+  std::vector<std::vector<Real>> mat = A;
+  std::vector<std::vector<Real>> inv(n, std::vector<Real>(n, 0.0));
+  for (int i = 0; i < n; i++) inv[i][i] = 1.0;
+  for (int i = 0; i < n; i++) {
+    int imax = i; Real amax = std::abs(mat[i][i]);
+    for (int k = i+1; k < n; k++)
+      if (std::abs(mat[k][i]) > amax) { amax = std::abs(mat[k][i]); imax = k; }
+    if (amax < 1e-14) mooseError("manualInvert6x6: singular matrix in tangent");
+    if (imax != i) { std::swap(mat[i], mat[imax]); std::swap(inv[i], inv[imax]); }
+    for (int k = i+1; k < n; k++) {
+      Real f = mat[k][i] / mat[i][i];
+      for (int j = i; j < n; j++) mat[k][j] -= f * mat[i][j];
+      for (int j = 0; j < n; j++) inv[k][j] -= f * inv[i][j];
+    }
+  }
+  for (int i = n-1; i >= 0; i--) {
+    for (int j = 0; j < n; j++) {
+      inv[i][j] /= mat[i][i];
+      for (int k = 0; k < i; k++) inv[k][j] -= mat[k][i] * inv[i][j];
+    }
+  }
+  Ainv = inv;
+}
+
 // ============================================================================
 // DYADIC PRODUCT: C_ijkl = A_ij * B_kl (UMAT: VECDYAD)
 // ============================================================================
@@ -867,7 +986,7 @@ OrthotropicPlasticityStressUpdate::dyadicProduct(const RankTwoTensor & A,
 RankFourTensor
 OrthotropicPlasticityStressUpdate::computeYieldHessian(const RankTwoTensor & stress) const
 {
-  // Voigt notation
+  // PLAIN COMPONENT 6-vector
   std::vector<Real> s(6);
   s[0] = stress(0,0); s[1] = stress(1,1); s[2] = stress(2,2);
   s[3] = stress(1,2); s[4] = stress(0,2); s[5] = stress(0,1);
@@ -895,9 +1014,10 @@ OrthotropicPlasticityStressUpdate::computeYieldHessian(const RankTwoTensor & str
   RankTwoTensor Fs_tensor;
   Fs_tensor.zero();
   Fs_tensor(0,0) = Fs[0]; Fs_tensor(1,1) = Fs[1]; Fs_tensor(2,2) = Fs[2];
-  Fs_tensor(1,2) = Fs_tensor(2,1) = Fs[3];
-  Fs_tensor(0,2) = Fs_tensor(2,0) = Fs[4];
-  Fs_tensor(0,1) = Fs_tensor(1,0) = Fs[5];
+  // Same convention as computeYieldGradient: off-diagonal slots get half.
+  Fs_tensor(1,2) = Fs_tensor(2,1) = 0.5 * Fs[3];
+  Fs_tensor(0,2) = Fs_tensor(2,0) = 0.5 * Fs[4];
+  Fs_tensor(0,1) = Fs_tensor(1,0) = 0.5 * Fs[5];
   
   // First term: -1/(SFFS)^1.5 * (Fσ ⊗ Fσ)
   RankFourTensor dyadic_term = dyadicProduct(Fs_tensor, Fs_tensor);
@@ -907,7 +1027,7 @@ OrthotropicPlasticityStressUpdate::computeYieldHessian(const RankTwoTensor & str
   RankFourTensor F_tensor;
   F_tensor.zero();
   
-  // Voigt to tensor conversion
+  // 6-vector
   auto voigt_to_tensor = [](int v, int & i, int & j) {
     const int map[6][2] = {{0,0}, {1,1}, {2,2}, {1,2}, {0,2}, {0,1}};
     i = map[v][0]; j = map[v][1];
@@ -919,7 +1039,12 @@ OrthotropicPlasticityStressUpdate::computeYieldHessian(const RankTwoTensor & str
       voigt_to_tensor(v1, i, j);
       voigt_to_tensor(v2, k, l);
       
-      Real val = _F_matrix[v1][v2];
+      // _F_matrix acts on plain 6-vector components. The equivalent
+      // RankFourTensor satisfies sigma:F:sigma = s.F.s only if each shear
+      // index divides by 2.
+      const Real w1 = (v1 < 3) ? 1.0 : 2.0;
+      const Real w2 = (v2 < 3) ? 1.0 : 2.0;
+      Real val = _F_matrix[v1][v2] / (w1 * w2);
       F_tensor(i, j, k, l) = val;
       
       // Enforce tensor symmetry
@@ -1060,17 +1185,25 @@ OrthotropicPlasticityStressUpdate::performNewtonRaphson(
     // Invert DRRDS → SSSA (UMAT line 1474)
     RankFourTensor SSSA = (-DRRDS).invSymm();
     
-    // Compute Newton update (UMAT lines 1476-1480)
-    Real DYDS_norm = DYDS.L2norm();
-    if (DYDS_norm < 1e-14)
-      DYDS_norm = 1e-14;
-    
-    Real numerator = -(f / DYDS_norm + (NP * (SSSA * RR)).trace());
-    RankTwoTensor SSSA_DRRDK = SSSA * DRRDK;
-    Real denominator = (NP * SSSA_DRRDK).trace() + DYDK / DYDS_norm;
-    
-    if (std::abs(denominator) < 1e-14) {
-      mooseWarning("Newton: Singular Jacobian");
+    // Condensation of
+    //   DRRDS:dsigma + DRRDK*ddk = -RR
+    //   DYDS :dsigma + DYDK *ddk = -f
+    // with SSSA = (-DRRDS)^-1, giving dsigma = SSSA*(RR + DRRDK*ddk) and
+    //   ddk = -(f + DYDS:(SSSA*RR)) / (DYDS:(SSSA*DRRDK) + DYDK)
+    // The previous form divided f and DYDK by ||DYDS|| and contracted with NP,
+    // which is exact only when DYDS is parallel to NP (rate-independent).
+    // With any viscosity mode DYDS = DSY + dvisc_ds is not.
+    const RankTwoTensor SSSA_RR    = SSSA * RR;
+    const RankTwoTensor SSSA_DRRDK = SSSA * DRRDK;
+
+    const Real denom_a   = DYDS.doubleContraction(SSSA_DRRDK);
+    const Real numerator = -(f + DYDS.doubleContraction(SSSA_RR));
+    const Real denominator = denom_a + DYDK;
+
+    // Relative guard: removing the 1/||DYDS|| scaling changed the magnitude
+    // of this quantity, so an absolute threshold is no longer meaningful.
+    if (std::abs(denominator) <= 1e-14 * (std::abs(denom_a) + std::abs(DYDK))) {
+      mooseWarning("Newton: singular Jacobian (vanishing consistency denominator)");
       return false;
     }
     
@@ -1089,14 +1222,14 @@ OrthotropicPlasticityStressUpdate::performNewtonRaphson(
   }
   
   // Failed to converge
-  mooseWarning("Newton failed: iter=", iterations, ", NORMRR=", NORMRR, ", ABSY=", ABSY);
+  if (_primal_fallbacks < 5)
+    mooseWarning("Newton failed: iter=", iterations, ", NORMRR=", NORMRR, ", ABSY=", ABSY);
   return false;
 }
 
 // ============================================================================
 // PRIMAL CPPA WITH LINE SEARCH (UMAT lines 1525-1856)
 // ============================================================================
-// All Voigt notation conversions done properly
 
 bool
 OrthotropicPlasticityStressUpdate::performPrimalCPP(
@@ -1160,7 +1293,7 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
   
   // Store initial residual RRI (7x1)
   std::vector<Real> RRI(7);
-  tensorToVoigt(RR, RRI);  // First 6 components
+  tensorToMandel(RR, RRI);  // First 6 components
   RRI[6] = f;  // 7th component
   
   // ===== PRIMAL CPPA LOOP =====
@@ -1170,6 +1303,14 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
     // Store current state for line search
     RankTwoTensor stress_old_iter = stress_i;
     Real dkappa_old_iter = dkappa_i;
+
+    // Merit at the CURRENT iterate, before the step is applied. NORMRR and
+    // ABSY are up to date here (set before the loop and at the end of each
+    // iteration). Previously MKI and MK1 were both evaluated AFTER the update,
+    // so MK1 == MKI identically: the Armijo test fired every iteration and the
+    // step was damped every time. UMAT computes these at lines 1682 and 1702,
+    // i.e. on either side of the update.
+    const Real MKI = 0.5 * NORMRR * NORMRR + 0.5 * ABSY * ABSY;
     
     // Update state variables
     kappa_i = kappa_old + dkappa_i;
@@ -1224,18 +1365,18 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
       DRRDK -= (dD_i / ((1.0 - D_i) * (1.0 - D_i))) * damage_contrib;
     }
     
-    // ===== BUILD 7x7 JACOBIAN SYSTEM (PROPER VOIGT) =====
+    // ===== BUILD 7x7 JACOBIAN SYSTEM =====
     
-    // Convert to Voigt notation
+    // Convert
     std::vector<std::vector<Real>> DRRDS_voigt;
-    rankFourToVoigt(DRRDS, DRRDS_voigt);  // 6x6
+    rankFourToMandel(DRRDS, DRRDS_voigt);  // 6x6
     
     std::vector<Real> DRRDK_voigt, DYDS_voigt;
-    tensorToVoigt(DRRDK, DRRDK_voigt);  // 6x1
-    tensorToVoigt(DYDS, DYDS_voigt);    // 6x1
+    tensorToMandel(DRRDK, DRRDK_voigt);  // 6x1
+    tensorToMandel(DYDS, DYDS_voigt);    // 6x1
     
     std::vector<Real> RR_voigt;
-    tensorToVoigt(RR, RR_voigt);  // 6x1
+    tensorToMandel(RR, RR_voigt);  // 6x1
     
     // Build 7x7 Jacobian: JJJ = [DRRDS  DRRDK]
     //                           [DYDS   DYDK ]
@@ -1323,10 +1464,23 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
         DDD[i] = -temp2[i];
     }
     
+    // Directional derivative of the merit along DDD, evaluated with the RRR
+    // and JJJ of the CURRENT iterate — both are overwritten below.
+    Real DMK = 0.0;
+    if (FLAG == 1) {
+      // Newton direction: DMK = RRR^T*J*(-J^-1*RRR) = -||RRR||^2 = -2*MKI
+      DMK = -2.0 * MKI;
+    }
+    else {
+      std::vector<Real> temp(7);
+      matVecMult7(JJJ, DDD, temp);
+      DMK = dotProduct7(RRR, temp);
+    }
+
     // ===== EXTRACT STRESS AND KAPPA UPDATES =====
     
     RankTwoTensor DSS1;
-    voigtToTensor(DDD, DSS1);  // First 6 components → stress tensor
+    mandelToTensor(DDD, DSS1);  // First 6 components → stress tensor
     Real DDK1 = DDD[6];         // 7th component → kappa
     
     // ===== TENTATIVE UPDATE =====
@@ -1336,9 +1490,9 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
     
     // Store state vectors for line search
     std::vector<Real> XX1(7), XXI(7);
-    tensorToVoigt(stress_i, XX1);
+    tensorToMandel(stress_i, XX1);
     XX1[6] = dkappa_i;
-    tensorToVoigt(stress_old_iter, XXI);
+    tensorToMandel(stress_old_iter, XXI);
     XXI[6] = dkappa_old_iter;
     
     // Enforce constraint: dκ >= 0
@@ -1364,28 +1518,13 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
     RR -= dkappa_i * NP;
     
     // Update residual vector
-    tensorToVoigt(RR, RR_voigt);
+    tensorToMandel(RR, RR_voigt);
     for (int i = 0; i < 6; i++)
       RRR[i] = RR_voigt[i];
     RRR[6] = f;
     
-    // ===== MERIT FUNCTION (UMAT line 1682, 1702) =====
-    
-    Real MKI = 0.5 * (RR * RR).trace() + 0.5 * f * f;
-    
-    // Compute merit derivative (for line search)
-    Real DMK = 0.0;
-    if (FLAG == 1) {
-      // Newton direction: DMK = -2*MKI
-      DMK = -2.0 * MKI;
-    }
-    else {
-      // Primal direction: DMK = RRR^T * JJJ * DDD
-      std::vector<Real> temp(7);
-      matVecMult7(JJJ, DDD, temp);
-      DMK = dotProduct7(RRR, temp);
-    }
-    
+    // ===== MERIT AT THE NEW POINT (UMAT line 1702) =====
+
     Real MK1 = 0.5 * (RR * RR).trace() + 0.5 * f * f;
     
     // ===== LINE SEARCH (ARMERO 2002, UMAT lines 1704-1773) =====
@@ -1399,14 +1538,9 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
       UPLIM = (1.0 - 2.0 * BETA * ALPHA) * MKI;
     }
     else {
-      // Primal direction: UPLIM = MKI + BETA * RRR^T * JJJ * (XX1 - XXI)
-      std::vector<Real> diff(7), temp(7);
-      for (int i = 0; i < 7; i++)
-        diff[i] = XX1[i] - XXI[i];
-      
-      matVecMult7(JJJ, diff, temp);
-      Real derivative = dotProduct7(RRR, temp);
-      UPLIM = MKI + BETA * derivative;
+      // XX1 - XXI = ALPHA * DDD, so RRR^T*JJJ*(XX1-XXI) = ALPHA * DMK,
+      // with DMK already evaluated at the current iterate.
+      UPLIM = MKI + BETA * ALPHA * DMK;
     }
     
     // Perform line search if merit increased
@@ -1431,7 +1565,7 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
         stress_i = stress_old_iter + DSS1 * ALPHA;
         
         // Update state vector
-        tensorToVoigt(stress_i, XX1);
+        tensorToMandel(stress_i, XX1);
         XX1[6] = dkappa_i;
         
         // Evaluate at new point
@@ -1456,12 +1590,7 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
           UPLIM = (1.0 - 2.0 * BETA * ALPHA) * MKI;
         }
         else {
-          std::vector<Real> diff(7), temp(7);
-          for (int i = 0; i < 7; i++)
-            diff[i] = XX1[i] - XXI[i];
-          matVecMult7(JJJ, diff, temp);
-          Real derivative = dotProduct7(RRI, temp);  // Use original RRI
-          UPLIM = MKI + BETA * derivative;
+          UPLIM = MKI + BETA * ALPHA * DMK;
         }
       }
       
@@ -1484,7 +1613,7 @@ OrthotropicPlasticityStressUpdate::performPrimalCPP(
       RR -= dkappa_i * NP;
       
       // Update RRI for next iteration
-      tensorToVoigt(RR, RRI);
+      tensorToMandel(RR, RRI);
       RRI[6] = f;
     }
     
@@ -1739,9 +1868,14 @@ OrthotropicPlasticityStressUpdate::computeViscosityDerivatives(
         Real abs_dk = std::abs(dkappa);
         Real base = eta_dt * abs_dk / HI;
         Real power = std::pow(base, 1.0 / _m);
-        
-        dvisc_ds = -(1.0 / (_m * HI)) * dHI_ds * sign * power;
-        dvisc_dk = -(1.0 / _m) * sign / HI * power;
+
+        // d(visc)/dHI = +sign*(1/m)*power/HI   (UMAT VDYDS, VISCFL=5)
+        dvisc_ds = (1.0 / (_m * HI)) * dHI_ds * sign * power;
+        // d(visc)/d(dkappa) = -(1/m)*power/|dkappa|, independent of sign.
+        // The UMAT writes this as (eta/dt)^(1/m) * (|dk|/HI)^(1/m - 1) / HI,
+        // which is the same expression. Diverges as dkappa -> 0 when m > 1
+        // (exponent 1/m < 1), so guard the division.
+        dvisc_dk = (abs_dk > 1e-30) ? -(1.0 / _m) * power / abs_dk : 0.0;
       }
       break;
   }
@@ -1807,12 +1941,10 @@ OrthotropicPlasticityStressUpdate::computeYieldFunction(
     Real delta_kappa,
     Real dt) const
 {
-  // Convert to Voigt notation
+  // 6-vector
   std::vector<Real> s(6);
   s[0] = stress(0,0); s[1] = stress(1,1); s[2] = stress(2,2);
   s[3] = stress(1,2); s[4] = stress(0,2); s[5] = stress(0,1);
-  
-
 
   // Quadric part: √(σ:F:σ)
   std::vector<Real> Fs(6, 0.0);
@@ -1883,7 +2015,7 @@ OrthotropicPlasticityStressUpdate::computeYieldFunction(
 RankTwoTensor
 OrthotropicPlasticityStressUpdate::computeYieldGradient(const RankTwoTensor & stress) const
 {
-  // Convert to Voigt
+  // 6-Vector plain (Mandel)
   std::vector<Real> s(6);
   s[0] = stress(0,0); s[1] = stress(1,1); s[2] = stress(2,2);
   s[3] = stress(1,2); s[4] = stress(0,2); s[5] = stress(0,1);
@@ -1915,9 +2047,13 @@ OrthotropicPlasticityStressUpdate::computeYieldGradient(const RankTwoTensor & st
   grad_tensor(0,0) = grad[0];
   grad_tensor(1,1) = grad[1];
   grad_tensor(2,2) = grad[2];
-  grad_tensor(1,2) = grad_tensor(2,1) = grad[3];
-  grad_tensor(0,2) = grad_tensor(2,0) = grad[4];
-  grad_tensor(0,1) = grad_tensor(1,0) = grad[5];
+  // grad[p] = dY/ds_p with s_p the plain component sigma_ij. For symmetric
+  // tensors dY = G:dsigma requires 2*G_ij = dY/ds_p for i != j, so each
+  // off-diagonal slot receives half. Matches the UMAT, whose Mandel DSY is
+  // the Mandel image of this tensor.
+  grad_tensor(1,2) = grad_tensor(2,1) = 0.5 * grad[3];
+  grad_tensor(0,2) = grad_tensor(2,0) = 0.5 * grad[4];
+  grad_tensor(0,1) = grad_tensor(1,0) = 0.5 * grad[5];
   
   return grad_tensor;
 }
