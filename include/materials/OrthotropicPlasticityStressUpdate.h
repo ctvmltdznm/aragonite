@@ -7,12 +7,17 @@
 
 #pragma once
 #include "StressUpdateBase.h"
+#include "MaterialModelPresets.h"
 
 class OrthotropicPlasticityStressUpdate : public StressUpdateBase
 {
 public:
   static InputParameters validParams();
   OrthotropicPlasticityStressUpdate(const InputParameters & parameters);
+  ~OrthotropicPlasticityStressUpdate();
+  /// Reports the cumulative fallback counters. See the .C for why this is not
+  /// done in the destructor.
+  virtual void timestepSetup() override;
 
   virtual void initQpStatefulProperties() override;
   virtual void propagateQpStatefulProperties() override;
@@ -78,10 +83,38 @@ protected:
   // Helper: UMAT TSFU function for density scaling with cortical correction
   Real computeTSFU(Real rho, Real exponent, Real delta) const;
 
+  // --- material-model presets (plastic_model != legacy) ---------------------
+  // Every preset feeds the SAME effective-strength slots that explicit mode
+  // fills (_sigma_*_tension/_compression, _tau_*_max, _zeta*), so the quadric
+  // is always assembled by the one block at the end of the constructor and
+  // stays plain-component. Presets never touch _F_matrix directly.
+  void applyBonePreset();
+  void applyCoralPreset();
+  void resolvePostYieldAndViscosity();
+  /// value of `name` if set by the user, otherwise `preset`
+  Real resolve(const std::string & name, Real preset) const;
+  /// warn about parameters the chosen plastic_model ignores
+  void warnIgnored(const std::vector<std::string> & names) const;
+
+  // --- self-checks, debug_checks = true -------------------------------------
+  /// FD check of computeYieldGradient / computeYieldHessian / softening
+  /// derivative. Runs once in the constructor, at states WITH shear, so every
+  /// preset is checked with its own _F_matrix.
+  void runDebugChecks() const;
+  /// max relative error of the analytic gradient/Hessian at one stress state
+  void fdCheckAt(const RankTwoTensor & stress, Real & grad_err, Real & hess_err) const;
+
   // ==========================================================================
   // YIELD INPUT MODE
   // ==========================================================================
   const bool _use_fabric_scaling;
+
+  /// material-model flag (legacy = pre-flag behaviour)
+  const MaterialModelPresets::Model _model;
+  /// axis of transverse isotropy (1,2,3), UMAT PROPS(6)
+  const unsigned int _main_direction;
+  /// run the in-code self-checks at startup
+  const bool _debug_checks;
 
   // ==========================================================================
   // EFFECTIVE YIELD PARAMETERS (computed from either mode)
@@ -100,6 +133,8 @@ protected:
   // FABRIC MODE PARAMETERS (Schwiedrzik et al. 2013)
   // ==========================================================================
   Real _sigma_0_tension, _sigma_0_compression, _tau_0, _zeta_0;
+  // TI axial parameters (UMAT SIGDAP, SIGDAN, TAUDA0, ZETAA0)
+  Real _sigma_a_tension, _sigma_a_compression, _tau_a, _zeta_a;
   Real _fabric_m1, _fabric_m2, _fabric_m3;
   Real _density_rho, _exponent_p, _exponent_q, _delta_cortical;
 
@@ -123,6 +158,7 @@ protected:
     PERFECT_PLASTICITY,
     EXP_HARDENING,
     LINEAR_HARDENING,
+    SIMPLE_SOFTENING,   // UMAT PYFL=2
     EXP_SOFTENING,
     PIECEWISE_SOFTENING
   };
@@ -134,6 +170,8 @@ protected:
   Real _kslope;            // Hardening/softening rate
   Real _kmax;              // Start of softening transition
   Real _kmin;              // End of softening transition
+  Real _kwidth;              // simple_softening peak width (UMAT KWIDTH)
+  Real _initial_yield_ratio; // r(0) for exp_hardening / simple_softening (UMAT RDY)
 
   /// Viscosity mode
   enum class ViscosityMode
@@ -148,8 +186,9 @@ protected:
   
   ViscosityMode _viscosity_mode;
 
-  const Real _eta;
-  const Real _m;  // Viscosity exponent (for exponential, logarithmic, etc.)
+  // non-const: a plastic_model preset may set them
+  Real _eta;
+  Real _m;  // Viscosity shape parameter; meaning depends on viscosity_mode
 
   // Damage (optional, D=0 default)
   const bool _use_damage;
@@ -179,8 +218,19 @@ protected:
   // tensor was substituted. Only the first few are reported. Not a material
   // property on purpose: the tangent is only computed during Jacobian
   // assembly, and material-property output is evaluated during residuals.
+  // Warnings are gated to the first few, so these counters are the only
+  // complete record. They are reported from timestepSetup(), NOT from the
+  // destructor: MOOSE tears material objects down after the output system, so
+  // a destructor print never reaches the log (observed on the P runs, where
+  // five gated warnings appeared and no totals line did).
   unsigned int _tangent_fallbacks = 0;
   unsigned int _primal_fallbacks = 0;
+  // last values reported, so a line is printed only when something changed
+  unsigned int _reported_tangent = 0;
+  unsigned int _reported_primal = 0;
+  /// Mandel round-trip check needs an elasticity tensor, so it runs on the
+  /// first updateState call rather than in the constructor.
+  bool _mandel_checked = false;
 
   // Verify positive semidefiniteveness of 4th tensor
   void checkYieldSurfaceConvexity() const;
