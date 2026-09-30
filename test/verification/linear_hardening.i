@@ -177,6 +177,7 @@
   dt = 0.1
   end_time = 120.0
   solve_type = 'NEWTON'
+  nl_abs_tol = 1e-11
   petsc_options_iname = '-pc_type'
   petsc_options_value = 'lu'
 []

@@ -250,7 +250,7 @@
   petsc_options_value = 'gamg     2                     gmres     300                200        1e-4'
 
   nl_rel_tol = 1e-5
-  nl_abs_tol = 1e-2
+  nl_abs_tol = 1e-6
   line_search = l2
   nl_max_its = 100
   l_max_its  = 200

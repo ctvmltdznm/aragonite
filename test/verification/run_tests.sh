@@ -2,7 +2,9 @@
 # ============================================================================
 # run_tests.sh - tangent-work test driver
 #
-#   ./run_tests.sh fd            FD unit check of yield gradient/Hessian (1 step)
+#   ./run_tests.sh fd            in-code self-checks (debug_checks = true), 1 step
+#   ./run_tests.sh M             four material-model presets (M1-M3 use $MFI,
+#                                M4 runs $LH untouched as the legacy regression)
 #   ./run_tests.sh A B C         single-element matrix (A regression, B rotated, C twin)
 #   ./run_tests.sh Bt Bs Bf      B variants: tight local tol / SMALL strain / FDJ
 #   ./run_tests.sh D             bone cube, production settings, 3 steps
@@ -11,7 +13,16 @@
 #   ./run_tests.sh Dtol          bone tolerance control (nl_abs_tol = 1e-8)
 #   ./run_tests.sh V             every viscosity mode on the single element
 #   MODE=exponential ./run_tests.sh Vr   rate-dependence + dt-independence check
-#   ./run_tests.sh P             forces the Primal CPPA fallback (tests the 7x7 path)
+#   ./run_tests.sh P             Primal CPPA vs Newton, self-referencing (7x7 path)
+#
+# Preset coverage is split in two: verify_presets.py checks all 49 flag
+# pairings against the UMAT formulas offline (seconds, no MOOSE), and the M
+# target runs only the four presets below through the solver. Running all 49
+# through MOOSE would buy nothing the offline check does not already give.
+#
+# M1-M3 need an input whose elasticity block is already a
+# ComputeFabricElasticityTensor, because a CLI override cannot change a
+# block's type. That is $MFI. They cannot be run off $LH.
 #
 # Every matrix test is run twice with the SAME binary:
 #   *_ref   tangent_operator = elastic   (reference: tangent cannot change the answer)
@@ -29,6 +40,7 @@ MPI_BONE=${MPI_BONE:-"mpiexec -n 32"}           # bone cube
 LH=${LH:-linear_hardening.i}
 TWIN=${TWIN:-twin.i}
 BONE=${BONE:-cube_tension_22.i}
+MFI=${MFI:-material_flags_single_element.i}    # self-contained material-flag driver
 BASELINE_LH=${BASELINE_LH:-baseline_lh.csv}    # = the linear_hardening_out.csv from Step 2
 ANALYZE=${ANALYZE:-./analyse_run.py}
 TOL=${TOL:-1e-5}                               # relative, per CSV column
@@ -82,10 +94,84 @@ for T in "$@"; do
   echo "=================================== $T"
   case $T in
 
-  fd)   # needs Patch F compiled in; one step is enough, the check fires at t_step 1
-    run fd "$MPI_SMALL" "$LH" Executioner/num_steps=1 Outputs/file_base=results/fd
-    grep -m1 "FD check" results/fd.log || echo "    no FD line - is Patch F compiled in?"
+  fd)   # in-code self-checks: FD of yield gradient/Hessian/softening derivative
+        # (constructor, states with shear) and the Mandel round trip (first
+        # stress update). One step is enough; both fire before t_step 1 ends.
+    run fd "$MPI_SMALL" "$LH" Executioner/num_steps=1 Outputs/file_base=results/fd \
+      Materials/plasticity/debug_checks=true
+    grep -m1 "FD check" results/fd.log || echo "    no FD line - is debug_checks wired in?"
+    grep -m1 "Mandel round-trip" results/fd.log || echo "    no Mandel line"
     grep -m1 -i "error" results/fd.log
+    ;;
+
+  M)    # material-model flags: four representative presets.
+        #
+        # M1-M3 run $MFI, NOT $LH. A MOOSE CLI override can create a block but
+        # cannot set its type, so overriding Materials/elasticity/elastic_model
+        # on an input whose elasticity block is a ComputeElasticityTensorCoupled
+        # (or is named something else) makes MOOSE build an empty [elasticity]
+        # block and abort with
+        #     missing required parameter 'Materials/elasticity/type'
+        # $MFI already has a ComputeFabricElasticityTensor under that name.
+        #
+        # M4 is the legacy regression and runs $LH with NO overrides at all:
+        # legacy is the default for both flags, so an untouched run of the
+        # existing production input IS the regression test, and it also proves
+        # the input still parses against the new parameter set.
+        #
+        # Coverage rationale, one preset per distinct code path:
+        #   M1 trabecular_fabric_ortho  fabric scaling + simple_softening (PYFL=2)
+        #                               + initial_yield_ratio = 0.7, the bone path
+        #   M2 compact_ti md=3          TI axial strengths, the zeta_a -> zeta_ij
+        #                               conversion, exp_hardening (PYFL=1), and the
+        #                               surface the old convexity guard rejected
+        #   M3 coral                    explicit 9 + 9 constants, no density/fabric
+        #   M4 legacy                   regression: pre-flag behaviour must not move
+        #
+        # debug_checks is ON for M1-M3, so the per-preset FD check of the yield
+        # gradient, Hessian and softening derivative runs once per preset.
+        #
+        # EXPECTED in the M1 and M2 logs: three "Parameter 'zeta12|13|23' is
+        # ignored" warnings. $MFI defaults to coral and carries placeholder
+        # zetas; a bone model does not use them. That is the flag machinery
+        # reporting correctly.
+    RHO=${RHO_M:-0.2}
+    DBG="Materials/plasticity/debug_checks=true"
+
+    echo "--- M1  trabecular_fabric_ortho (fabric + simple_softening + r0=0.7)"
+    run M1 "$MPI_SMALL" "$MFI" Outputs/file_base=results/M1 $DBG \
+      Materials/elasticity/elastic_model=trabecular_fabric_ortho \
+      Materials/plasticity/plastic_model=trabecular_fabric_ortho \
+      Materials/elasticity/density_rho=$RHO Materials/plasticity/density_rho=$RHO \
+      Materials/elasticity/fabric_m1=0.85 Materials/plasticity/fabric_m1=0.85 \
+      Materials/elasticity/fabric_m2=0.95 Materials/plasticity/fabric_m2=0.95 \
+      Materials/elasticity/fabric_m3=1.20 Materials/plasticity/fabric_m3=1.20
+
+    echo "--- M2  compact_ti, main_direction=3 (zeta_a conversion, exp_hardening)"
+    run M2 "$MPI_SMALL" "$MFI" Outputs/file_base=results/M2 $DBG \
+      Materials/elasticity/elastic_model=compact_ti \
+      Materials/plasticity/plastic_model=compact_ti \
+      Materials/elasticity/main_direction=3 Materials/plasticity/main_direction=3 \
+      Materials/elasticity/density_rho=$RHO Materials/plasticity/density_rho=$RHO
+
+    echo "--- M3  coral (explicit 9 + 9 constants; \$MFI defaults)"
+    run M3 "$MPI_SMALL" "$MFI" Outputs/file_base=results/M3 $DBG
+
+    for t in M1 M2 M3; do
+      grep -m1 "FD check" "results/$t.log" || echo "    $t: no FD line - is debug_checks wired in?"
+      grep -m1 -i "\*\*\* ERROR" "results/$t.log" && echo "    $t: FAILED, see results/$t.log"
+      python3 "$ANALYZE" "results/$t.log" | tee "results/$t.summary"
+    done
+
+    echo "--- M4  legacy: \$LH with no overrides, must reproduce the pre-flag baseline"
+    run M4 "$MPI_SMALL" "$LH" Outputs/file_base=results/M4
+    if [ -f "$BASELINE_LH" ]; then
+      python3 "$ANALYZE" results/M4.log --ref "$BASELINE_LH" --test results/M4.csv \
+        --tol 1e-12 | tee results/M4.summary
+    else
+      echo "    no $BASELINE_LH - generate it from the pre-flag binary first"
+      python3 "$ANALYZE" results/M4.log | tee results/M4.summary
+    fi
     ;;
 
   A)    # sentinel: axis-aligned, no material-frame shear
@@ -169,19 +255,43 @@ PY
     ;;
 
   P)    # forces the Primal CPPA fallback by starving the stage-2 Newton, so the
-        # 7x7 path (normally never entered) is actually exercised. Runs the
-        # axis-aligned and the rotated case; both must match the normal runs.
+        # 7x7 path (normally never entered) is actually exercised.
+        #
+        # The reference is generated HERE, with identical settings and
+        # max_iterations_newton = 100, so the ONLY difference between the two
+        # runs is which local solver does the work. That is the whole point of
+        # the test and it has to be a controlled comparison.
+        #
+        # This target used to compare against results/A_full.csv and
+        # results/B_full.csv. That was never controlled: it also changed
+        # absolute_tolerance (1e-6 -> 1e-8), turned on use_finite_deform_jacobian,
+        # and for B changed viscosity_mode (rate_independent in B, the input's
+        # linear in P). The differences it reported were those settings, not the
+        # Primal path. PRODUCTION_SETTINGS.md already measures ~3e-4 relative
+        # stress error from absolute_tolerance = 1e-6 alone, which is the order
+        # of what that comparison was flagging.
     for cfg in "P_axis   -                                                    -" \
                "P_rot    ICs/euler_phi1_0/value=30 ICs/euler_Phi_0/value=45 ICs/euler_phi2_0/value=60"; do
       set -- $cfg; tag=$1; shift
       rot=""; [ "$1" != "-" ] && rot="$*"
-      run "$tag" "$MPI_SMALL" "$LH" Outputs/file_base=results/$tag \
-        Materials/plasticity/max_iterations_newton=1 \
-        Materials/plasticity/absolute_tolerance=1e-8 \
-        Physics/SolidMechanics/QuasiStatic/all/use_finite_deform_jacobian=true $rot
-      ref=results/A_full.csv; [ "$tag" = "P_rot" ] && ref=results/B_full.csv
-      echo "--- $tag (Primal CPPA forced) vs $ref"
-      python3 "$ANALYZE" "results/$tag.log" --ref "$ref" --test "results/$tag.csv" \
+      SAME="Materials/plasticity/absolute_tolerance=1e-8
+            Physics/SolidMechanics/QuasiStatic/all/use_finite_deform_jacobian=true"
+
+      run "${tag}_newton" "$MPI_SMALL" "$LH" Outputs/file_base=results/${tag}_newton \
+        Materials/plasticity/max_iterations_newton=100 $SAME $rot
+      run "${tag}_primal" "$MPI_SMALL" "$LH" Outputs/file_base=results/${tag}_primal \
+        Materials/plasticity/max_iterations_newton=1 $SAME $rot
+
+      # The test is only meaningful if the two runs really took different paths.
+      n_ref=$(grep -c "switching to Primal" "results/${tag}_newton.log" || true)
+      n_tst=$(grep -c "switching to Primal" "results/${tag}_primal.log" || true)
+      echo "--- $tag: Newton->Primal warnings  reference $n_ref (want 0), primal run $n_tst (want > 0)"
+      [ "$n_ref" != "0" ] && echo "    WARNING: the reference run also fell back; it is not a pure Newton path"
+      [ "$n_tst" = "0" ]  && echo "    WARNING: the primal run never fell back; the 7x7 path was NOT exercised"
+
+      echo "--- $tag: Primal CPPA vs Newton, identical settings otherwise"
+      python3 "$ANALYZE" "results/${tag}_primal.log" --ref-log "results/${tag}_newton.log" \
+        --ref "results/${tag}_newton.csv" --test "results/${tag}_primal.csv" \
         --tol 1e-6 | tee "results/$tag.summary"
     done
     ;;
@@ -247,6 +357,6 @@ PY
       | tee results/Dtol.summary
     ;;
 
-  *) echo "unknown test '$T' (use: fd A B Bt Bs Bf V Vr P C D Ddt Dtol)";;
+  *) echo "unknown test '$T' (use: fd M A B Bt Bs Bf V Vr P C D Ddt Dtol)";;
   esac
 done

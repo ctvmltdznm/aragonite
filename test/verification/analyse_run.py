@@ -35,6 +35,15 @@ RE_STEP = re.compile(r"Time Step\s+(\d+),\s*time\s*=\s*([-+0-9.eE]+),\s*dt\s*=\s
 RE_NL = re.compile(r"^\s*(\d+)\s+Nonlinear \|R\|\s*=\s*([-+0-9.eE]+|nan|inf)", re.I)
 RE_NL_FAIL = re.compile(r"Nonlinear solve did not converge due to (\w+)")
 RE_L_FAIL = re.compile(r"Linear solve did not converge due to (\w+)")
+# Run-end totals printed by ~OrthotropicPlasticityStressUpdate. The in-run
+# warnings are gated to the first few occurrences, so counting warning lines
+# undercounts; these totals are complete. One line per material object, so
+# they are summed.
+RE_TOTALS = re.compile(r"totals:\s*Newton->Primal\s+(\d+),\s*C_ep fallbacks\s+(\d+)")
+# These lines are CUMULATIVE per material object and are reprinted whenever a
+# counter changes, so take the max, not the sum. With several material objects
+# (threads, blocks) that is a lower bound; the per-object numbers are not
+# distinguishable in the log.
 
 
 def parse_log(path):
@@ -45,6 +54,8 @@ def parse_log(path):
     fallbacks = 0
     fallback_lines = []
     primal = 0
+    primal_total = None
+    fallback_total = None
     fd_line = None
     mandel_line = None
 
@@ -74,12 +85,18 @@ def parse_log(path):
             m = RE_L_FAIL.search(line)
             if m:
                 lin_fail[m.group(1)] += 1
-            if "C_ep fallback" in line:
+            # exact warning text, so the run-end totals line ("C_ep fallbacks N")
+            # is not miscounted as a fallback event
+            if "C_ep fallback to elastic" in line:
                 fallbacks += 1
                 if len(fallback_lines) < 5:
                     fallback_lines.append(line.strip())
             if "switching to Primal" in line:
                 primal += 1
+            m = RE_TOTALS.search(line)
+            if m:
+                primal_total = max(primal_total or 0, int(m.group(1)))
+                fallback_total = max(fallback_total or 0, int(m.group(2)))
             if fd_line is None and "FD check" in line:
                 fd_line = line.strip()
             if mandel_line is None and "Mandel round-trip" in line:
@@ -87,7 +104,9 @@ def parse_log(path):
 
     return dict(attempts=attempts, diverged=diverged, lin_fail=lin_fail,
                 fallbacks=fallbacks, fallback_lines=fallback_lines,
-                primal=primal, fd_line=fd_line, mandel_line=mandel_line)
+                primal=primal, primal_total=primal_total,
+                fallback_total=fallback_total,
+                fd_line=fd_line, mandel_line=mandel_line)
 
 
 def newton_stats(attempts):
@@ -140,7 +159,19 @@ def report_log(name, P):
         a = failed[0]
         rs = ", ".join(f"{x:.3e}" for x in a["res"][:8])
         print(f"    first failure: step {a['step']} t={a['time']:g} dt={a['dt']:.3g}  |R|: {rs}")
-    print(f"    C_ep fallbacks {P['fallbacks']}   Newton->Primal {P['primal']}")
+    # Prefer the run-end totals; the warning lines are gated to the first few.
+    if P["primal_total"] is not None:
+        gated = ""
+        if P["primal_total"] > P["primal"] or P["fallback_total"] > P["fallbacks"]:
+            gated = f"   (warning lines seen: {P['fallbacks']} / {P['primal']}, gated)"
+        print(f"    C_ep fallbacks {P['fallback_total']}   "
+              f"Newton->Primal {P['primal_total']}{gated}"
+              "   [cumulative through the second-to-last step]")
+    else:
+        print(f"    C_ep fallbacks {P['fallbacks']}   Newton->Primal {P['primal']}"
+              "   (from warning lines, which are GATED to the first 5 each: treat"
+              " any 5 as 'at least 5'. No totals line means zero fallbacks, or a"
+              " binary predating the timestepSetup report.)")
     for l in P["fallback_lines"]:
         print(f"      {l}")
     if P["fd_line"]:

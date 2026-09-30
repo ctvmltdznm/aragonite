@@ -18,6 +18,8 @@ using namespace libMesh;
 
 registerMooseObject("aragoniteApp", OrthotropicPlasticityStressUpdate);
 
+using MaterialModelPresets::Model;
+
 InputParameters
 OrthotropicPlasticityStressUpdate::validParams()
 {
@@ -28,7 +30,35 @@ OrthotropicPlasticityStressUpdate::validParams()
     "(Schwiedrzik et al. 2013).");
   
   // ==========================================================================
-  // YIELD INPUT MODE
+  // MATERIAL MODEL FLAG (UMAT PROPS(1) + coral + legacy)
+  // ==========================================================================
+  params.addParam<MooseEnum>("plastic_model", MaterialModelPresets::modelEnum(),
+                             MaterialModelPresets::modelDoc() +
+                             " Bone presets also set the UMAT post-yield and viscosity "
+                             "defaults (initial_yield_ratio = 0.7, simple_softening or "
+                             "exp_hardening, linear viscosity with eta = 1e-4).");
+  params.addRangeCheckedParam<unsigned int>(
+      "main_direction", 1, "main_direction>=1 & main_direction<=3",
+      "Material axis of transverse isotropy (1,2,3), UMAT PROPS(6). Used by "
+      "trabecular_ti, compact_ti and trabecular_fabric_ti.");
+
+  // TI axial strengths (preset defaults for trabecular_ti / compact_ti)
+  params.addParam<Real>("sigma_a_tension", "Axial tensile strength (TI models) [MPa]");
+  params.addParam<Real>("sigma_a_compression", "Axial compressive strength (TI models) [MPa]");
+  params.addParam<Real>("tau_a",
+      "Shear strength of the planes containing the axis (TI models) [MPa]");
+  params.addParam<Real>("zeta_a",
+      "Axial interaction parameter (TI models). Referenced to the AXIAL F as in the "
+      "UMAT; converted internally to the lower-index convention of _F_matrix.");
+
+  params.addParam<bool>("debug_checks", false,
+      "Run the in-code self-checks at startup: finite-difference check of the yield "
+      "gradient, Hessian and softening derivative at stress states with shear, and a "
+      "Mandel round-trip check of the elasticity tensor on the first stress update. "
+      "Cheap (a few hundred yield evaluations), but prints; off in production.");
+
+  // ==========================================================================
+  // YIELD INPUT MODE (legacy only)
   // ==========================================================================
   params.addParam<bool>("use_fabric_scaling", false,
     "Enable fabric-based orthotropy (Schwiedrzik et al. 2013). When true, "
@@ -140,6 +170,14 @@ OrthotropicPlasticityStressUpdate::validParams()
   params.addParam<Real>("kslope", 10.0, "Hardening/softening rate");
   params.addParam<Real>("kmax", 0.001, "Start of softening transition");
   params.addParam<Real>("kmin", 0.015, "End of softening transition");
+  params.addParam<Real>("kwidth", 8.0,
+      "simple_softening (UMAT PYFL=2, KWIDTH): width of the post-yield peak. "
+      "The peak sits at kappa = kmax and r decays back to initial_yield_ratio.");
+  params.addParam<Real>("initial_yield_ratio", 1.0,
+      "r(0), the UMAT's RDY. With r(0) < 1 the input strengths are ULTIMATE "
+      "strengths and yield onsets at initial_yield_ratio * strength. Bone presets "
+      "use 0.7. Only exp_hardening and simple_softening read it; the other "
+      "post-yield modes start at r(0) = 1.");
 
   // Viscocity
   MooseEnum viscosity_mode("rate_independent linear exponential "
@@ -162,6 +200,9 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   : StressUpdateBase(parameters),
     // Yield input mode
     _use_fabric_scaling(getParam<bool>("use_fabric_scaling")),
+    _model(static_cast<Model>(static_cast<int>(getParam<MooseEnum>("plastic_model")))),
+    _main_direction(getParam<unsigned int>("main_direction")),
+    _debug_checks(getParam<bool>("debug_checks")),
     
     // Initialize yield strengths to zero (will be set in constructor body)
     _sigma_xx_tension(0.0), _sigma_yy_tension(0.0), _sigma_zz_tension(0.0),
@@ -175,6 +216,7 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
                          getParam<Real>("sigma_0_compression") : _sigma_0_tension),
     _tau_0(isParamValid("tau_0") ? getParam<Real>("tau_0") : 0.0),
     _zeta_0(getParam<Real>("zeta_0")),
+    _sigma_a_tension(0.0), _sigma_a_compression(0.0), _tau_a(0.0), _zeta_a(0.0),
     _fabric_m1(getParam<Real>("fabric_m1")),
     _fabric_m2(getParam<Real>("fabric_m2")),
     _fabric_m3(getParam<Real>("fabric_m3")),
@@ -194,6 +236,8 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
     _kslope(getParam<Real>("kslope")),
     _kmax(getParam<Real>("kmax")),
     _kmin(getParam<Real>("kmin")),
+    _kwidth(getParam<Real>("kwidth")),
+    _initial_yield_ratio(getParam<Real>("initial_yield_ratio")),
     
     // Viscoplasticity
     _eta(getParam<Real>("eta")),
@@ -229,7 +273,21 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   // COMPUTE EFFECTIVE YIELD PARAMETERS
   // ==========================================================================
   
-  if (_use_fabric_scaling)
+  if (_model == Model::LEGACY)
+    warnIgnored({"sigma_a_tension", "sigma_a_compression", "tau_a", "zeta_a", "main_direction"});
+
+  if (_model != Model::LEGACY)
+  {
+    if (_use_fabric_scaling)
+      paramError("use_fabric_scaling",
+                 "use_fabric_scaling is legacy-only. With plastic_model set, the model "
+                 "itself decides whether fabric scaling applies.");
+    if (_model == Model::CORAL)
+      applyCoralPreset();
+    else
+      applyBonePreset();
+  }
+  else if (_use_fabric_scaling)
   {
     // ========================================================================
     // FABRIC-BASED MODE (Schwiedrzik et al. 2013, Section 2.3)
@@ -301,6 +359,7 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
     // ========================================================================
     // EXPLICIT MODE (original interface - backward compatible)
     // ========================================================================
+    // legacy only: reached through the else-branch of the model dispatch above
     // Validate that explicit parameters are provided
     if (!isParamValid("sigma_xx_tension"))
       mooseError("Explicit mode requires 'sigma_xx_tension' parameter. "
@@ -368,33 +427,9 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
       Moose::out << "=================================================\n" << std::endl;
     }
   }
-  // Parse post-yield mode
-  MooseEnum mode = getParam<MooseEnum>("postyield_mode");
-  if (mode == "perfect")
-    _postyield_mode = PostYieldMode::PERFECT_PLASTICITY;
-  else if (mode == "exp_hardening")
-    _postyield_mode = PostYieldMode::EXP_HARDENING;
-  else if (mode == "linear_hardening")
-    _postyield_mode = PostYieldMode::LINEAR_HARDENING;
-  else if (mode == "exp_softening")
-    _postyield_mode = PostYieldMode::EXP_SOFTENING;
-  else if (mode == "piecewise_softening")
-    _postyield_mode = PostYieldMode::PIECEWISE_SOFTENING;
-
-  // Viscocity
-  MooseEnum visc_mode = getParam<MooseEnum>("viscosity_mode");
-  if (visc_mode == "rate_independent")
-    _viscosity_mode = ViscosityMode::RATE_INDEPENDENT;
-  else if (visc_mode == "linear")
-    _viscosity_mode = ViscosityMode::LINEAR;
-  else if (visc_mode == "exponential")
-    _viscosity_mode = ViscosityMode::EXPONENTIAL;
-  else if (visc_mode == "logarithmic")
-    _viscosity_mode = ViscosityMode::LOGARITHMIC;
-  else if (visc_mode == "polynomial")
-    _viscosity_mode = ViscosityMode::POLYNOMIAL;
-  else if (visc_mode == "powerlaw")
-    _viscosity_mode = ViscosityMode::POWERLAW;
+  // Post-yield mode, viscosity mode and their scalars. For a preset model the
+  // defaults come from MaterialModelPresets.h unless the user set them.
+  resolvePostYieldAndViscosity();
 
   // Initialize F matrix and f_lin vector (6x6 and 6x1)
   _F_matrix.resize(6, std::vector<Real>(6, 0.0));
@@ -457,7 +492,7 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   }
 
   checkYieldSurfaceConvexity();
-  
+
   // Linear term for tension/compression asymmetry
   _f_lin_vector[0] = (sigma_c_xx - sigma_t_xx) / (2.0 * sigma_c_xx * sigma_t_xx);  // xx
   _f_lin_vector[1] = (sigma_c_yy - sigma_t_yy) / (2.0 * sigma_c_yy * sigma_t_yy);  // yy
@@ -474,39 +509,93 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   Real test_quadric = test_stress * test_stress * _F_matrix[5][5];
   Moose::out << "*** If stress=2427: quadric=" << test_quadric << ", phi=" << std::sqrt(test_quadric) << "\n";
   */
+
+  // Self-checks last: they evaluate the finished yield surface (_F_matrix AND
+  // _f_lin_vector) and the resolved post-yield law.
+  if (_debug_checks)
+    runDebugChecks();
 }
+
+OrthotropicPlasticityStressUpdate::~OrthotropicPlasticityStressUpdate()
+{
+  // Deliberately empty. An earlier version printed the fallback totals here and
+  // the line never reached the log: MOOSE destroys the material objects after
+  // the output system is gone. Verified on the P runs -- five gated
+  // "switching to Primal CPPA" warnings, no totals line. The report lives in
+  // timestepSetup() instead.
+}
+
+void
+OrthotropicPlasticityStressUpdate::timestepSetup()
+{
+  // Cumulative fallback totals, printed only when they have changed since the
+  // last report. The per-occurrence warnings are gated to the first five, so
+  // counting warning lines undercounts any run that falls back more than that.
+  //
+  // timestepSetup() runs at the START of a step, so the numbers cover
+  // everything through the previous step; whatever happens in the final step is
+  // not reported. That is acceptable for a diagnostic, and it is the only hook
+  // a MaterialBase has that is guaranteed to reach the log.
+  if (_primal_fallbacks != _reported_primal || _tangent_fallbacks != _reported_tangent)
+  {
+    _reported_primal = _primal_fallbacks;
+    _reported_tangent = _tangent_fallbacks;
+    Moose::out << "OrthotropicPlasticityStressUpdate totals: Newton->Primal "
+               << _primal_fallbacks << ", C_ep fallbacks " << _tangent_fallbacks
+               << " (cumulative, through step " << (_t_step > 0 ? _t_step - 1 : 0) << ")\n";
+  }
+}
+
 
 void
 OrthotropicPlasticityStressUpdate::checkYieldSurfaceConvexity() const
 {
-  const Real F11 = _F_matrix[0][0];
-  const Real F22 = _F_matrix[1][1];
-  const Real F33 = _F_matrix[2][2];
+  // sqrt(s:F:s) is convex iff F is positive semi-definite. F is block diagonal
+  // (normal 3x3 block; shear block diagonal and positive by construction), so
+  // the test reduces to the normal block
+  //   [ F11          -zeta12 F11   -zeta13 F11 ]
+  //   [ -zeta12 F11   F22          -zeta23 F22 ]
+  //   [ -zeta13 F11  -zeta23 F22    F33        ]
+  // PSD <=> every principal minor >= 0 (Sylvester, semi-definite form).
+  //
+  // This replaces the earlier bounds |zeta_ij| <= F_jj/F_ii (Eq. 55) plus the
+  // Eq. 56 cubic. Those are not the PSD conditions of THIS matrix: the exact
+  // 2x2 bound is |zeta_ij| <= sqrt(F_jj/F_ii), and the cubic differs from the
+  // determinant of the block in its squares and in the sign of the cross term.
+  // They are also not invariant under relabelling the axes, which is exactly
+  // what main_direction does: they rejected the convex UMAT compact_ti surface
+  // for main_direction = 2 and 3. Verified against eigenvalues for every
+  // preset and 20000 random zeta triples (verify_presets.py).
+  const Real F11 = _F_matrix[0][0], F22 = _F_matrix[1][1], F33 = _F_matrix[2][2];
+  const Real F12 = _F_matrix[0][1], F13 = _F_matrix[0][2], F23 = _F_matrix[1][2];
+  const Real scale = std::max({F11, F22, F33});
+  const Real tol = 1e-10;
 
-  // Eq. 55: |zeta_ij| <= |F_jj / F_ii|, reference index = lower index of the pair
-  if (std::abs(_zeta12) > std::abs(F22 / F11) + 1e-10)
+  if (F11 <= 0.0 || F22 <= 0.0 || F33 <= 0.0)
+    mooseError("OrthotropicPlasticityStressUpdate: non-positive normal quadric term "
+               "(F11, F22, F33 = ", F11, ", ", F22, ", ", F33, ")");
+
+  const Real m12 = F11 * F22 - F12 * F12;
+  const Real m13 = F11 * F33 - F13 * F13;
+  const Real m23 = F22 * F33 - F23 * F23;
+  const Real det = F11 * m23 - F12 * (F12 * F33 - F23 * F13) + F13 * (F12 * F23 - F22 * F13);
+
+  if (m12 < -tol * scale * scale)
     mooseError("OrthotropicPlasticityStressUpdate: zeta12 = ", _zeta12,
-               " violates convexity bound |zeta12| <= F22/F11 = ", std::abs(F22 / F11),
-               " (Schwiedrzik et al. 2013, Eq. 55)");
-  if (std::abs(_zeta13) > std::abs(F33 / F11) + 1e-10)
+               " gives a non-convex yield surface; requires |zeta12| <= sqrt(F22/F11) = ",
+               std::sqrt(F22 / F11));
+  if (m13 < -tol * scale * scale)
     mooseError("OrthotropicPlasticityStressUpdate: zeta13 = ", _zeta13,
-               " violates convexity bound |zeta13| <= F33/F11 = ", std::abs(F33 / F11),
-               " (Schwiedrzik et al. 2013, Eq. 55)");
-  if (std::abs(_zeta23) > std::abs(F33 / F22) + 1e-10)
+               " gives a non-convex yield surface; requires |zeta13| <= sqrt(F33/F11) = ",
+               std::sqrt(F33 / F11));
+  if (m23 < -tol * scale * scale)
     mooseError("OrthotropicPlasticityStressUpdate: zeta23 = ", _zeta23,
-               " violates convexity bound |zeta23| <= F33/F22 = ", std::abs(F33 / F22),
-               " (Schwiedrzik et al. 2013, Eq. 55)");
-
-  // Eq. 56: cubic determinant condition on the {1,2,3} normal-stress block
-  const Real det_condition = F22 * F22 * F33 * F33
-                            - F11 * F11 * F33 * F33 * _zeta12 * _zeta12
-                            - F11 * F11 * F22 * F22 * _zeta13 * _zeta13
-                            + 2.0 * F11 * F11 * F22 * F22 * _zeta12 * _zeta13 * _zeta23
-                            - F22 * F22 * F22 * F22 * _zeta23 * _zeta23;
-  if (det_condition < -1e-10)
+               " gives a non-convex yield surface; requires |zeta23| <= sqrt(F33/F22) = ",
+               std::sqrt(F33 / F22));
+  if (det < -tol * scale * scale * scale)
     mooseError("OrthotropicPlasticityStressUpdate: zeta12/13/23 = ", _zeta12, ", ", _zeta13,
-               ", ", _zeta23, " violate convexity determinant condition = ", det_condition,
-               " (Schwiedrzik et al. 2013, Eq. 56)");
+               ", ", _zeta23, " give a non-convex yield surface (determinant of the normal "
+               "block = ", det, ")");
 }
 
 void
@@ -653,6 +742,19 @@ OrthotropicPlasticityStressUpdate::updateState(
   RankTwoTensor stress_trial_material = stress_old_material + 
                                         elasticity_tensor_material * strain_increment_material;
   //RankTwoTensor stress_trial_material = rotateToMaterial(stress_new, R);
+
+  // Self-check (debug_checks): the Mandel helpers must reproduce invSymm().
+  // Needs an elasticity tensor, so it cannot run in the constructor.
+  if (_debug_checks && !_mandel_checked)
+  {
+    const Real err = mandelRoundTripError(elasticity_tensor_material);
+    Moose::out << "Mandel round-trip check: max rel err " << err
+               << (err < 1e-10 ? "  OK" : "  FAILED") << "\n";
+    if (err >= 1e-10)
+      mooseError("Mandel round-trip check failed (", err,
+                 "): rankFourToMandel/invert/mandelToRankFour does not reproduce invSymm()");
+    _mandel_checked = true;
+  }
 
   // Get compliance tensor in material coordinates
   RankFourTensor C_inv_material = elasticity_tensor_material.invSymm();
@@ -1659,9 +1761,24 @@ OrthotropicPlasticityStressUpdate::computeSofteningFactor(Real kappa) const
       break;
     
     case PostYieldMode::EXP_HARDENING:
-      // Start at 1.0, harden to (1 + hardening_amount)
-      // r = _residual_strength + (1.0 - _residual_strength) * (1.0 - std::exp(-_kslope * kappa));
-      r = 1.0 + _residual_strength * (1.0 - std::exp(-_kslope * kappa));
+      // r = r0 + (1 - r0 + h) (1 - exp(-kslope kappa)),  h = _residual_strength
+      //   r0 = 1 : legacy form  1 + h (1 - exp(-kslope kappa))
+      //   h  = 0 : UMAT PYFL=1  RDY + (1 - RDY)(1 - exp(-KSLOPE kappa))
+      // Derivative below must stay the exact derivative of this line.
+      r = _initial_yield_ratio +
+          (1.0 - _initial_yield_ratio + _residual_strength) * (1.0 - std::exp(-_kslope * kappa));
+      break;
+
+    case PostYieldMode::SIMPLE_SOFTENING:
+      // UMAT PYFL=2 (RADK, UMAT 2075-2078):
+      //   r = RDY + (1-RDY) [ exp(-(k-kmax)^2 / (kwidth kmax^2))
+      //                       - exp(-1/kwidth - kslope k) ]
+      // r(0) = RDY exactly (the two exponentials cancel at kappa = 0), rises to
+      // ~1 at kappa = kmax, then decays back to RDY.
+      r = _initial_yield_ratio +
+          (1.0 - _initial_yield_ratio) *
+              (std::exp(-(kappa - _kmax) * (kappa - _kmax) / (_kwidth * _kmax * _kmax)) -
+               std::exp(-1.0 / _kwidth - _kslope * kappa));
       break;
     
     case PostYieldMode::LINEAR_HARDENING:
@@ -1719,7 +1836,17 @@ OrthotropicPlasticityStressUpdate::computeSofteningDerivative(Real kappa) const
       break;
     
     case PostYieldMode::EXP_HARDENING:
-      dr_dk = _residual_strength * _kslope * std::exp(-_kslope * kappa);
+      dr_dk = (1.0 - _initial_yield_ratio + _residual_strength) * _kslope *
+              std::exp(-_kslope * kappa);
+      break;
+
+    case PostYieldMode::SIMPLE_SOFTENING:
+      // exact derivative of the SIMPLE_SOFTENING branch above; matches UMAT
+      // DRADK (UMAT 2123-2127). Checked by FD with debug_checks = true.
+      dr_dk = (1.0 - _initial_yield_ratio) *
+              (-2.0 * (kappa - _kmax) / (_kwidth * _kmax * _kmax) *
+                   std::exp(-(kappa - _kmax) * (kappa - _kmax) / (_kwidth * _kmax * _kmax)) +
+               _kslope * std::exp(-1.0 / _kwidth - _kslope * kappa));
       break;
     
     case PostYieldMode::LINEAR_HARDENING:
@@ -2015,7 +2142,9 @@ OrthotropicPlasticityStressUpdate::computeYieldFunction(
 RankTwoTensor
 OrthotropicPlasticityStressUpdate::computeYieldGradient(const RankTwoTensor & stress) const
 {
-  // 6-Vector plain (Mandel)
+  // PLAIN COMPONENT 6-vector, NOT Mandel: s[5] = sigma_12 and _F_matrix[5][5]
+  // = 1/tau_xy^2, so s.F.s equals sigma:F:sigma with no sqrt(2) factors. The
+  // conversion back to a tensor at the end is where the halving appears.
   std::vector<Real> s(6);
   s[0] = stress(0,0); s[1] = stress(1,1); s[2] = stress(2,2);
   s[3] = stress(1,2); s[4] = stress(0,2); s[5] = stress(0,1);
@@ -2085,4 +2214,484 @@ OrthotropicPlasticityStressUpdate::computeTSFU(Real rho, Real exponent, Real del
     Real correction = (delta - 1.0) * std::pow((rho - 0.5) / 0.5, exponent);
     return base + correction;
   }
+}
+
+// ============================================================================
+// MATERIAL-MODEL PRESETS
+// ============================================================================
+// Every preset only fills the effective-strength slots. The quadric itself is
+// assembled by the single block at the end of the constructor, in PLAIN
+// COMPONENT form (F[5][5] = 1/tau_xy^2 acting on sigma_12). A preset must
+// never write _F_matrix in Mandel form: the yield surface would still be
+// right, but the gradient, and therefore the plastic flow direction, would be
+// wrong by a factor of 2 in shear, and every uniaxial test would still pass.
+
+Real
+OrthotropicPlasticityStressUpdate::resolve(const std::string & name, Real preset) const
+{
+  return isParamSetByUser(name) ? getParam<Real>(name) : preset;
+}
+
+void
+OrthotropicPlasticityStressUpdate::warnIgnored(const std::vector<std::string> & names) const
+{
+  for (const auto & n : names)
+    if (isParamSetByUser(n))
+      mooseWarning("Parameter '", n, "' is ignored for plastic_model = ",
+                   getParam<MooseEnum>("plastic_model"));
+}
+
+void
+OrthotropicPlasticityStressUpdate::applyBonePreset()
+{
+  using namespace MaterialModelPresets;
+  const PlasticPreset pre = plasticPreset(_model);
+  const MooseEnum model_name = getParam<MooseEnum>("plastic_model");
+
+  // explicit-mode inputs never apply to a bone preset
+  warnIgnored({"sigma_xx_tension", "sigma_yy_tension", "sigma_zz_tension",
+               "sigma_xx_compression", "sigma_yy_compression", "sigma_zz_compression",
+               "tau_xy_max", "tau_xz_max", "tau_yz_max", "zeta12", "zeta13", "zeta23",
+               "yield_density_exponent"});
+  if (isIso(_model))
+    warnIgnored({"sigma_a_tension", "sigma_a_compression", "tau_a", "zeta_a", "tau_0",
+                 "fabric_m1", "fabric_m2", "fabric_m3", "exponent_q", "main_direction"});
+  else if (isTI(_model))
+    warnIgnored({"tau_0", "fabric_m1", "fabric_m2", "fabric_m3", "exponent_q"});
+  else if (_model == Model::TRABECULAR_FABRIC_ORTHO)
+    warnIgnored({"sigma_a_tension", "sigma_a_compression", "tau_a", "zeta_a", "main_direction"});
+  else // fabric TI
+    warnIgnored({"sigma_a_tension", "sigma_a_compression", "tau_a", "zeta_a"});
+
+  if (!isParamSetByUser("density_rho"))
+    paramError("density_rho", "Bone plastic models require density_rho (BV/TV)");
+  if (isFabric(_model) && !(isParamSetByUser("fabric_m1") && isParamSetByUser("fabric_m2") &&
+                            isParamSetByUser("fabric_m3")))
+    mooseError("plastic_model = ", model_name, " requires fabric_m1, fabric_m2, fabric_m3");
+
+  _sigma_0_tension = resolve("sigma_0_tension", pre.s0p);
+  _sigma_0_compression = resolve("sigma_0_compression", pre.s0n);
+  _zeta_0 = resolve("zeta_0", pre.zeta0);
+  _exponent_p = resolve("exponent_p", pre.p);
+  _delta_cortical = resolve("delta_cortical", pre.delta);
+  if (isFabric(_model))
+  {
+    _tau_0 = resolve("tau_0", pre.tau0);
+    _exponent_q = resolve("exponent_q", pre.q);
+  }
+  if (isTI(_model))
+  {
+    _sigma_a_tension = resolve("sigma_a_tension", pre.sap);
+    _sigma_a_compression = resolve("sigma_a_compression", pre.san);
+    _tau_a = resolve("tau_a", pre.taua);
+    _zeta_a = resolve("zeta_a", pre.zetaa);
+  }
+
+  // density scaling, UMAT TSFU(RHO,PP,DELTA) applied to every strength
+  const Real t = computeTSFU(_density_rho, _exponent_p, _delta_cortical);
+  auto S = [](Real sp, Real sn) { return (sp + sn) / (2.0 * sp * sn); };
+  // shear strength of an ISOTROPIC plane: not an input in the UMAT, it follows
+  // from the isotropy constraint (UMAT 413): TAUD0 = sqrt(0.5/S0^2/(1+ZETA0)).
+  const Real tau_iso =
+      1.0 / (S(_sigma_0_tension, _sigma_0_compression) * std::sqrt(2.0 * (1.0 + _zeta_0)));
+  const unsigned int a = _main_direction - 1;
+  // plane order as used by _F_matrix: 0 -> 12 (xy), 1 -> 13 (xz), 2 -> 23 (yz).
+  // NOTE the UMAT's slot order is 4 = xy, 5 = xz, 6 = yz, i.e. slots 4 and 6
+  // are interchanged relative to MOOSE (UMAT_TO_MOOSE_MAPPING.md section 1).
+  // The presets are written in terms of PLANES, not slot numbers, so that
+  // swap cannot leak in here.
+  const unsigned int pl[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+
+  Real sT[3], sC[3], tau[3], zeta[3];
+
+  if (isIso(_model))
+  {
+    for (unsigned int i = 0; i < 3; ++i)
+    {
+      sT[i] = _sigma_0_tension * t;
+      sC[i] = _sigma_0_compression * t;
+      tau[i] = tau_iso * t;
+      zeta[i] = _zeta_0;
+    }
+  }
+  else if (isTI(_model))
+  {
+    for (unsigned int i = 0; i < 3; ++i)
+    {
+      sT[i] = (i == a ? _sigma_a_tension : _sigma_0_tension) * t;
+      sC[i] = (i == a ? _sigma_a_compression : _sigma_0_compression) * t;
+    }
+    for (unsigned int p = 0; p < 3; ++p)
+    {
+      const unsigned int i = pl[p][0], j = pl[p][1];
+      const bool axial_plane = (i == a || j == a);
+      tau[p] = (axial_plane ? _tau_a : tau_iso) * t;
+      // The UMAT writes F_aj = -zeta_a * F_aa, i.e. referenced to the AXIAL
+      // entry. _F_matrix uses F_ij = -zeta_ij * F_ii with i < j, so
+      //   zeta_ij = zeta_a * F_aa / F_ii,
+      // which is the identity only when i == a (main_direction = 1). Without
+      // this conversion main_direction = 2 or 3 gives the wrong surface.
+      if (axial_plane)
+      {
+        const Real Faa = std::pow(S(sT[a], sC[a]), 2);
+        const Real Fii = std::pow(S(sT[i], sC[i]), 2);
+        zeta[p] = _zeta_a * Faa / Fii;
+      }
+      else
+        zeta[p] = _zeta_0;
+    }
+  }
+  else // fabric models (Schwiedrzik et al. 2013, Eq. 43/44)
+  {
+    Real m[3] = {_fabric_m1, _fabric_m2, _fabric_m3};
+    const Real fabric_sum = m[0] + m[1] + m[2];
+    if (std::abs(fabric_sum - 3.0) > 0.01)
+      mooseWarning("Fabric eigenvalues should sum to 3.0, got ", fabric_sum, ".");
+
+    const bool ti = (_model == Model::TRABECULAR_FABRIC_TI);
+    if (ti)
+    {
+      // UMAT averages the two transverse eigenvalues (UMAT 669-670)
+      const unsigned int b = (a + 1) % 3, c = (a + 2) % 3;
+      m[b] = m[c] = 0.5 * (m[b] + m[c]);
+      _fabric_m1 = m[0]; _fabric_m2 = m[1]; _fabric_m3 = m[2];
+    }
+    const Real q = _exponent_q;
+    for (unsigned int i = 0; i < 3; ++i)
+    {
+      sT[i] = _sigma_0_tension * t * std::pow(m[i], 2.0 * q);
+      sC[i] = _sigma_0_compression * t * std::pow(m[i], 2.0 * q);
+    }
+    for (unsigned int p = 0; p < 3; ++p)
+    {
+      const unsigned int i = pl[p][0], j = pl[p][1];
+      // fabric TI: the transverse plane must stay isotropic, so it uses the
+      // derived tau_iso instead of tau_0 (UMAT 723-725)
+      const bool transverse = ti && i != a && j != a;
+      tau[p] = (transverse ? tau_iso : _tau_0) * t * std::pow(m[i] * m[j], q);
+      zeta[p] = _zeta_0 * std::pow(m[i] / m[j], 2.0 * q);
+    }
+  }
+
+  _sigma_xx_tension = sT[0]; _sigma_yy_tension = sT[1]; _sigma_zz_tension = sT[2];
+  _sigma_xx_compression = sC[0]; _sigma_yy_compression = sC[1]; _sigma_zz_compression = sC[2];
+  _tau_xy_max = tau[0]; _tau_xz_max = tau[1]; _tau_yz_max = tau[2];
+  _zeta12 = zeta[0]; _zeta13 = zeta[1]; _zeta23 = zeta[2];
+
+  Moose::out << "\n=== YIELD SURFACE: plastic_model = " << model_name << " ===\n"
+             << "rho=" << _density_rho << " p=" << _exponent_p << " delta=" << _delta_cortical
+             << " TSFU=" << t;
+  if (usesMainDirection(_model))
+    Moose::out << " main_direction=" << _main_direction;
+  if (isFabric(_model))
+    Moose::out << "\nm (used)=" << _fabric_m1 << " " << _fabric_m2 << " " << _fabric_m3
+               << " q=" << _exponent_q << " tau_0=" << _tau_0;
+  Moose::out << "\nsigma_0+=" << _sigma_0_tension << " sigma_0-=" << _sigma_0_compression
+             << " zeta_0=" << _zeta_0;
+  if (isTI(_model))
+    Moose::out << " sigma_a+=" << _sigma_a_tension << " sigma_a-=" << _sigma_a_compression
+               << " tau_a=" << _tau_a << " zeta_a=" << _zeta_a;
+  Moose::out << "\nEffective strengths (material frame):\n"
+             << "  sigma_xx: +" << _sigma_xx_tension << " / -" << _sigma_xx_compression << "\n"
+             << "  sigma_yy: +" << _sigma_yy_tension << " / -" << _sigma_yy_compression << "\n"
+             << "  sigma_zz: +" << _sigma_zz_tension << " / -" << _sigma_zz_compression << "\n"
+             << "  tau_xy=" << _tau_xy_max << " tau_xz=" << _tau_xz_max
+             << " tau_yz=" << _tau_yz_max << "\n"
+             << "  zeta12=" << _zeta12 << " zeta13=" << _zeta13 << " zeta23=" << _zeta23
+             << "  (F_ij = -zeta_ij F_ii, i<j)\n";
+}
+
+void
+OrthotropicPlasticityStressUpdate::applyCoralPreset()
+{
+  const MaterialModelPresets::CoralStrengths d;
+
+  warnIgnored({"density_rho", "fabric_m1", "fabric_m2", "fabric_m3", "exponent_p", "exponent_q",
+               "delta_cortical", "sigma_0_tension", "sigma_0_compression", "tau_0", "zeta_0",
+               "sigma_a_tension", "sigma_a_compression", "tau_a", "zeta_a", "main_direction",
+               "yield_density_exponent"});
+
+  _sigma_xx_tension = resolve("sigma_xx_tension", d.sxx);
+  _sigma_yy_tension = resolve("sigma_yy_tension", d.syy);
+  _sigma_zz_tension = resolve("sigma_zz_tension", d.szz);
+  _tau_xy_max = resolve("tau_xy_max", d.txy);
+  _tau_xz_max = resolve("tau_xz_max", d.txz);
+  _tau_yz_max = resolve("tau_yz_max", d.tyz);
+  _sigma_xx_compression = resolve("sigma_xx_compression", _sigma_xx_tension);
+  _sigma_yy_compression = resolve("sigma_yy_compression", _sigma_yy_tension);
+  _sigma_zz_compression = resolve("sigma_zz_compression", _sigma_zz_tension);
+
+  // No default: zeta = 0 is not acceptable and no calibrated coral value exists.
+  for (const std::string n : {"zeta12", "zeta13", "zeta23"})
+    if (!isParamSetByUser(n))
+      paramError(n, "plastic_model = coral requires zeta12, zeta13 and zeta23 to be set "
+                    "explicitly: there is no calibrated coral value yet and zeta = 0 is "
+                    "not an acceptable placeholder.");
+  _zeta12 = getParam<Real>("zeta12");
+  _zeta13 = getParam<Real>("zeta13");
+  _zeta23 = getParam<Real>("zeta23");
+  if (_zeta12 == 0.0 || _zeta13 == 0.0 || _zeta23 == 0.0)
+    mooseWarning("plastic_model = coral with a zero zeta_ij: the normal stresses are "
+                 "uncoupled in that pair.");
+
+  Moose::out << "\n=== YIELD SURFACE: plastic_model = coral ===\n"
+             << "  sigma_xx: +" << _sigma_xx_tension << " / -" << _sigma_xx_compression << "\n"
+             << "  sigma_yy: +" << _sigma_yy_tension << " / -" << _sigma_yy_compression << "\n"
+             << "  sigma_zz: +" << _sigma_zz_tension << " / -" << _sigma_zz_compression << "\n"
+             << "  tau_xy=" << _tau_xy_max << " tau_xz=" << _tau_xz_max
+             << " tau_yz=" << _tau_yz_max << "\n"
+             << "  zeta12=" << _zeta12 << " zeta13=" << _zeta13 << " zeta23=" << _zeta23 << "\n"
+             << "Note: coral RVEs normally also carry HomogenizedExponentialCZM on the "
+                "grain/needle interfaces (see MATERIAL_MODELS.md).\n";
+}
+
+void
+OrthotropicPlasticityStressUpdate::resolvePostYieldAndViscosity()
+{
+  MooseEnum py = getParam<MooseEnum>("postyield_mode");
+  MooseEnum visc = getParam<MooseEnum>("viscosity_mode");
+
+  if (_model != Model::LEGACY)
+  {
+    const MaterialModelPresets::PlasticPreset pre = MaterialModelPresets::plasticPreset(_model);
+
+    // The preset scalars belong to the preset's post-yield LAW: kmax is a peak
+    // position for simple_softening and a softening onset for exp_softening,
+    // so they are only applied while that law is in use. Overriding
+    // postyield_mode falls back to the plain parameter defaults. Same for
+    // viscosity_mode and eta/m.
+    if (!isParamSetByUser("postyield_mode"))
+    {
+      py = pre.postyield;
+      _initial_yield_ratio = resolve("initial_yield_ratio", pre.rdy);
+      _residual_strength = resolve("residual_strength", pre.residual);
+      _kslope = resolve("kslope", pre.kslope);
+      _kmax = resolve("kmax", pre.kmax);
+      if (pre.kmin > 0.0)
+        _kmin = resolve("kmin", pre.kmin);
+      _kwidth = resolve("kwidth", pre.kwidth);
+    }
+    if (!isParamSetByUser("viscosity_mode"))
+    {
+      visc = pre.viscosity;
+      _eta = resolve("eta", pre.eta);
+      // m is UNUSED by linear (every bone preset and coral use linear); it is
+      // carried only so an override of viscosity_mode alone lands on the UMAT
+      // value. Only powerlaw (reciprocal exponent) and the divisor modes read it.
+      _m = resolve("m", pre.m);
+    }
+  }
+
+  if (py == "perfect")
+    _postyield_mode = PostYieldMode::PERFECT_PLASTICITY;
+  else if (py == "exp_hardening")
+    _postyield_mode = PostYieldMode::EXP_HARDENING;
+  else if (py == "linear_hardening")
+    _postyield_mode = PostYieldMode::LINEAR_HARDENING;
+  else if (py == "simple_softening")
+    _postyield_mode = PostYieldMode::SIMPLE_SOFTENING;
+  else if (py == "exp_softening")
+    _postyield_mode = PostYieldMode::EXP_SOFTENING;
+  else if (py == "piecewise_softening")
+    _postyield_mode = PostYieldMode::PIECEWISE_SOFTENING;
+  else
+    mooseError("Unhandled postyield_mode '", py, "'");
+
+  if (visc == "rate_independent")
+    _viscosity_mode = ViscosityMode::RATE_INDEPENDENT;
+  else if (visc == "linear")
+    _viscosity_mode = ViscosityMode::LINEAR;
+  else if (visc == "exponential")
+    _viscosity_mode = ViscosityMode::EXPONENTIAL;
+  else if (visc == "logarithmic")
+    _viscosity_mode = ViscosityMode::LOGARITHMIC;
+  else if (visc == "polynomial")
+    _viscosity_mode = ViscosityMode::POLYNOMIAL;
+  else if (visc == "powerlaw")
+    _viscosity_mode = ViscosityMode::POWERLAW;
+  else
+    mooseError("Unhandled viscosity_mode '", visc, "'");
+
+  if (_initial_yield_ratio <= 0.0 || _initial_yield_ratio > 1.0)
+    paramError("initial_yield_ratio", "must be in (0, 1]");
+  const bool uses_r0 = _postyield_mode == PostYieldMode::EXP_HARDENING ||
+                       _postyield_mode == PostYieldMode::SIMPLE_SOFTENING;
+  if (!uses_r0 && _initial_yield_ratio != 1.0)
+    mooseWarning("initial_yield_ratio = ", _initial_yield_ratio,
+                 " is ignored by postyield_mode = ", py, " (that law starts at r(0) = 1)");
+  if (_postyield_mode == PostYieldMode::SIMPLE_SOFTENING && (_kmax <= 0.0 || _kwidth <= 0.0))
+    mooseError("simple_softening requires kmax > 0 and kwidth > 0");
+  if (_viscosity_mode == ViscosityMode::POWERLAW && _m < 0.5)
+    mooseWarning("viscosity_mode = powerlaw with m = ", _m, ": visc ~ x^(1/m) underflows "
+                 "to rate-independent behaviour for small m (see UMAT_TO_MOOSE_MAPPING.md 6.5)");
+
+  Moose::out << "Post-yield: " << py << " r0=" << _initial_yield_ratio
+             << " kslope=" << _kslope << " kmax=" << _kmax << " kmin=" << _kmin
+             << " kwidth=" << _kwidth << " residual_strength=" << _residual_strength
+             << "\nViscosity: " << visc << " eta=" << _eta << " m=" << _m
+             << (_viscosity_mode == ViscosityMode::LINEAR ? "  (m unused by linear)" : "")
+             << "\n==============================================================\n\n";
+}
+
+// ============================================================================
+// SELF-CHECKS (debug_checks = true)
+// ============================================================================
+// Runs once per material object at construction, so every preset is checked
+// with its own _F_matrix, at stress states WITH shear. A pure-normal state
+// cannot see the shear-slot factor-of-2 class of bug (see
+// UMAT_TO_MOOSE_MAPPING.md section 6.3), which is why the states below always
+// carry shear.
+
+void
+OrthotropicPlasticityStressUpdate::fdCheckAt(const RankTwoTensor & stress,
+                                             Real & grad_err, Real & hess_err) const
+{
+  // symmetric perturbation E^(ij) = (e_i x e_j + e_j x e_i)/2, so that
+  // dphi/dh along E equals G:E = G_ij, and dG/dh along E equals H:E.
+  const int IJ[6][2] = {{0, 0}, {1, 1}, {2, 2}, {1, 2}, {0, 2}, {0, 1}};
+  const Real scale = stress.L2norm();
+  const Real h = 1e-6 * (scale > 0.0 ? scale : 1.0);
+
+  const RankTwoTensor G = computeYieldGradient(stress);
+  const RankFourTensor H = computeYieldHessian(stress);
+
+  Real gmax = 0.0, hmax = 0.0, gdiff = 0.0, hdiff = 0.0;
+  for (int p = 0; p < 6; p++)
+  {
+    const int i = IJ[p][0], j = IJ[p][1];
+    RankTwoTensor E;
+    E.zero();
+    E(i, j) = E(j, i) = (i == j) ? 1.0 : 0.5;
+
+    RankTwoTensor sp = stress + E * h, sm = stress - E * h;
+
+    // kappa = 0, delta_kappa = 0, dt = 0: r(0) is a constant that cancels in
+    // the difference, and computeViscosity returns 0 for dt < 1e-16, so this
+    // differentiates exactly phi = sqrt(s:F:s) + f_lin.s.
+    const Real fp = computeYieldFunction(sp, 0.0, 0.0, 0.0);
+    const Real fm = computeYieldFunction(sm, 0.0, 0.0, 0.0);
+    const Real g_fd = (fp - fm) / (2.0 * h);
+    gdiff = std::max(gdiff, std::abs(g_fd - G(i, j)));
+    gmax = std::max(gmax, std::abs(G(i, j)));
+
+    const RankTwoTensor Gp = computeYieldGradient(sp);
+    const RankTwoTensor Gm = computeYieldGradient(sm);
+    const RankTwoTensor HE = contractRankFourTwo(H, E);
+    for (int k = 0; k < 3; k++)
+      for (int l = 0; l < 3; l++)
+      {
+        const Real h_fd = (Gp(k, l) - Gm(k, l)) / (2.0 * h);
+        hdiff = std::max(hdiff, std::abs(h_fd - HE(k, l)));
+        hmax = std::max(hmax, std::abs(HE(k, l)));
+      }
+  }
+  grad_err = (gmax > 0.0) ? gdiff / gmax : gdiff;
+  hess_err = (hmax > 0.0) ? hdiff / hmax : hdiff;
+}
+
+void
+OrthotropicPlasticityStressUpdate::runDebugChecks() const
+{
+  // Stress states scaled to the yield surface of THIS preset, all with shear.
+  const Real s0 = 0.5 / std::sqrt(_F_matrix[0][0]);
+  const Real t12 = 0.5 / std::sqrt(_F_matrix[5][5]);
+  const Real t13 = 0.5 / std::sqrt(_F_matrix[4][4]);
+  const Real t23 = 0.5 / std::sqrt(_F_matrix[3][3]);
+
+  std::vector<RankTwoTensor> states(3);
+  for (auto & S : states)
+    S.zero();
+  // mixed normal + full shear
+  states[0](0, 0) = 0.6 * s0;  states[0](1, 1) = -0.4 * s0; states[0](2, 2) = 0.25 * s0;
+  states[0](0, 1) = states[0](1, 0) = 0.35 * t12;
+  states[0](0, 2) = states[0](2, 0) = 0.20 * t13;
+  states[0](1, 2) = states[0](2, 1) = 0.30 * t23;
+  // shear dominated
+  states[1](0, 0) = 0.05 * s0;
+  states[1](0, 1) = states[1](1, 0) = 0.70 * t12;
+  states[1](1, 2) = states[1](2, 1) = 0.45 * t23;
+  // compression + one shear
+  states[2](0, 0) = -0.5 * s0; states[2](1, 1) = -0.3 * s0; states[2](2, 2) = -0.2 * s0;
+  states[2](0, 2) = states[2](2, 0) = 0.40 * t13;
+
+  Real gmax = 0.0, hmax = 0.0;
+  for (const auto & S : states)
+  {
+    Real ge = 0.0, he = 0.0;
+    fdCheckAt(S, ge, he);
+    gmax = std::max(gmax, ge);
+    hmax = std::max(hmax, he);
+  }
+
+  // Softening derivative. r(kappa) is only PIECEWISE smooth: exp_softening has
+  // a derivative jump at kmax, and piecewise_softening at kmax and kmin. A
+  // central difference straddling such a kink returns the mean of the two
+  // one-sided derivatives, so at kappa = kmax it reports exactly half the true
+  // value -- a relative error of 0.5, which is what the first version of this
+  // check reported for coral (exp_softening, residual 0.7, kslope 30: analytic
+  // -9, central difference -4.5). The derivative code was correct.
+  //
+  // So compare the two ONE-SIDED differences first. Where they agree the point
+  // is smooth and the analytic derivative must match there; where they disagree
+  // the point is a kink, which is reported and skipped rather than failed.
+  Real rmax = 0.0;
+  unsigned int n_kinks = 0;
+  Real first_kink = 0.0;
+  const Real k_ref = (_kmax > 0.0) ? _kmax : 0.01;
+  for (const Real k : {0.2 * k_ref, 0.9 * k_ref, 1.0 * k_ref, 1.5 * k_ref, 4.0 * k_ref})
+  {
+    const Real h = 1e-6 * k_ref;
+    const Real r0 = computeSofteningFactor(k);
+    const Real fwd = (computeSofteningFactor(k + h) - r0) / h;
+    const Real bwd = (r0 - computeSofteningFactor(k - h)) / h;
+    const Real an = computeSofteningDerivative(k);
+    const Real sc = std::max({std::abs(an), std::abs(fwd), std::abs(bwd), 1.0});
+
+    if (std::abs(fwd - bwd) > 1e-4 * sc)
+    {
+      // derivative discontinuity: no finite difference is meaningful here
+      if (!n_kinks)
+        first_kink = k;
+      n_kinks++;
+      continue;
+    }
+    rmax = std::max(rmax, std::abs(0.5 * (fwd + bwd) - an) / sc);
+  }
+
+  // r ITSELF must be continuous even where its derivative is not. A kink is a
+  // convergence nuisance; a jump in r moves the yield surface discontinuously
+  // and is a genuine defect. Check across both switch points a law can carry.
+  Real r_jump = 0.0;
+  for (const Real ks : {_kmax, _kmin})
+    if (ks > 0.0)
+    {
+      const Real h = 1e-6 * std::max(k_ref, ks);
+      r_jump = std::max(r_jump, std::abs(computeSofteningFactor(ks + h) -
+                                         computeSofteningFactor(ks - h)));
+    }
+
+  const bool ok = gmax < 1e-5 && hmax < 1e-5 && rmax < 1e-5 && r_jump < 1e-4;
+  Moose::out << "FD check (" << getParam<MooseEnum>("plastic_model")
+             << ", 3 states with shear): yield gradient " << gmax << ", Hessian " << hmax
+             << ", softening derivative " << rmax << ", r continuity " << r_jump
+             << (ok ? "  OK" : "  FAILED") << "\n";
+  if (n_kinks)
+    Moose::out << "  note: postyield_mode = " << getParam<MooseEnum>("postyield_mode")
+               << " has a derivative kink at kappa = " << first_kink << " ("
+               << n_kinks << " sample point(s) skipped). r stays continuous there, so this "
+                  "is valid, but the Jacobian jumps as a quadrature point crosses it.\n";
+
+  if (gmax >= 1e-5 || hmax >= 1e-5)
+    mooseError("FD check failed: analytic yield gradient/Hessian disagree with finite "
+               "differences (", gmax, ", ", hmax, "). A shear-slot conversion factor is "
+               "the usual cause.");
+  if (rmax >= 1e-5)
+    mooseError("FD check failed: computeSofteningDerivative is not the derivative of "
+               "computeSofteningFactor for postyield_mode = ",
+               getParam<MooseEnum>("postyield_mode"), " (", rmax,
+               "), at a point where the one-sided differences agree, so this is not a kink.");
+  if (r_jump >= 1e-4)
+    mooseError("FD check failed: computeSofteningFactor is discontinuous at kmax or kmin "
+               "for postyield_mode = ", getParam<MooseEnum>("postyield_mode"),
+               " (jump ", r_jump, "). The yield surface would move discontinuously.");
 }
