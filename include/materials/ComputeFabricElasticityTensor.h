@@ -45,6 +45,9 @@ protected:
 
   /// value of `name` if set by the user, otherwise the preset
   Real resolve(const std::string & name, Real preset) const;
+  /// elastic_model if set, else the shared material_model, else legacy.
+  /// Non-virtual and base-state only: safe to call from the initialiser list.
+  MaterialModelPresets::Model resolveModel() const;
   /// warn about parameters the chosen model ignores
   void warnIgnored(const std::vector<std::string> & names) const;
 
@@ -74,3 +77,4 @@ protected:
   const VariableValue & _euler_angle_2;
   const VariableValue & _euler_angle_3;
 };
+

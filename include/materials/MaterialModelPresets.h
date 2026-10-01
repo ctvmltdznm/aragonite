@@ -74,6 +74,19 @@ modelDoc()
          "Every preset value can be overridden by setting the parameter explicitly.";
 }
 
+/// Doc for the SHARED `material_model` parameter, which both
+/// ComputeFabricElasticityTensor and OrthotropicPlasticityStressUpdate accept.
+/// Set it once, normally in [GlobalParams], and both blocks follow it.
+inline std::string
+sharedModelDoc()
+{
+  return "Material model for BOTH the elastic and the plastic response. Set it once, "
+         "normally in [GlobalParams], and ComputeFabricElasticityTensor and "
+         "OrthotropicPlasticityStressUpdate both follow it, so the two cannot drift "
+         "apart. A per-block elastic_model or plastic_model overrides it for that block; "
+         "mixing the two is supported but warned about. " + modelDoc();
+}
+
 inline bool isBone(Model m) { return static_cast<int>(m) <= 5; }
 inline bool isTI(Model m)
 {

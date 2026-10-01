@@ -32,7 +32,11 @@ OrthotropicPlasticityStressUpdate::validParams()
   // ==========================================================================
   // MATERIAL MODEL FLAG (UMAT PROPS(1) + coral + legacy)
   // ==========================================================================
+  params.addParam<MooseEnum>("material_model", MaterialModelPresets::modelEnum(),
+                             MaterialModelPresets::sharedModelDoc());
   params.addParam<MooseEnum>("plastic_model", MaterialModelPresets::modelEnum(),
+                             "Plastic model for THIS block only, overriding material_model. "
+                             "Leave unset to follow material_model. " +
                              MaterialModelPresets::modelDoc() +
                              " Bone presets also set the UMAT post-yield and viscosity "
                              "defaults (initial_yield_ratio = 0.7, simple_softening or "
@@ -200,7 +204,7 @@ OrthotropicPlasticityStressUpdate::OrthotropicPlasticityStressUpdate(
   : StressUpdateBase(parameters),
     // Yield input mode
     _use_fabric_scaling(getParam<bool>("use_fabric_scaling")),
-    _model(static_cast<Model>(static_cast<int>(getParam<MooseEnum>("plastic_model")))),
+    _model(resolveModel()),
     _main_direction(getParam<unsigned int>("main_direction")),
     _debug_checks(getParam<bool>("debug_checks")),
     
@@ -2226,6 +2230,33 @@ OrthotropicPlasticityStressUpdate::computeTSFU(Real rho, Real exponent, Real del
 // right, but the gradient, and therefore the plastic flow direction, would be
 // wrong by a factor of 2 in shear, and every uniaxial test would still pass.
 
+MaterialModelPresets::Model
+OrthotropicPlasticityStressUpdate::resolveModel() const
+{
+  // Precedence: the block-specific flag, then the shared one, then legacy.
+  // MOOSE applies [GlobalParams] through InputParameters::applyParameter, which
+  // only fills a parameter the block did not set and copies the "set by user"
+  // flag across, so isParamSetByUser() is true for a GlobalParams value and a
+  // per-block value always wins. That is exactly the precedence we want.
+  const bool spec_set = isParamSetByUser("plastic_model");
+  const bool shared_set = isParamSetByUser("material_model");
+  const MooseEnum spec = getParam<MooseEnum>("plastic_model");
+  const MooseEnum shared = getParam<MooseEnum>("material_model");
+
+  if (spec_set)
+  {
+    if (shared_set && static_cast<int>(spec) != static_cast<int>(shared))
+      mooseWarning("plastic_model = ", spec, " overrides material_model = ", shared,
+                   " in this block, so the elastic and plastic responses use different "
+                   "models. That is supported, but it is rarely intended: drop "
+                   "plastic_model to follow material_model.");
+    return static_cast<MaterialModelPresets::Model>(static_cast<int>(spec));
+  }
+  if (shared_set)
+    return static_cast<MaterialModelPresets::Model>(static_cast<int>(shared));
+  return MaterialModelPresets::Model::LEGACY;
+}
+
 Real
 OrthotropicPlasticityStressUpdate::resolve(const std::string & name, Real preset) const
 {
@@ -2237,8 +2268,9 @@ OrthotropicPlasticityStressUpdate::warnIgnored(const std::vector<std::string> & 
 {
   for (const auto & n : names)
     if (isParamSetByUser(n))
-      mooseWarning("Parameter '", n, "' is ignored for plastic_model = ",
-                   getParam<MooseEnum>("plastic_model"));
+      mooseWarning("Parameter '", n, "' is ignored for the plastic model ",
+                   isParamSetByUser("plastic_model") ? getParam<MooseEnum>("plastic_model")
+                                                     : getParam<MooseEnum>("material_model"));
 }
 
 void
@@ -2246,7 +2278,9 @@ OrthotropicPlasticityStressUpdate::applyBonePreset()
 {
   using namespace MaterialModelPresets;
   const PlasticPreset pre = plasticPreset(_model);
-  const MooseEnum model_name = getParam<MooseEnum>("plastic_model");
+  const MooseEnum model_name = isParamSetByUser("plastic_model")
+                                   ? getParam<MooseEnum>("plastic_model")
+                                   : getParam<MooseEnum>("material_model");
 
   // explicit-mode inputs never apply to a bone preset
   warnIgnored({"sigma_xx_tension", "sigma_yy_tension", "sigma_zz_tension",
@@ -2378,7 +2412,7 @@ OrthotropicPlasticityStressUpdate::applyBonePreset()
   _tau_xy_max = tau[0]; _tau_xz_max = tau[1]; _tau_yz_max = tau[2];
   _zeta12 = zeta[0]; _zeta13 = zeta[1]; _zeta23 = zeta[2];
 
-  Moose::out << "\n=== YIELD SURFACE: plastic_model = " << model_name << " ===\n"
+  Moose::out << "\n=== YIELD SURFACE: model = " << model_name << " ===\n"
              << "rho=" << _density_rho << " p=" << _exponent_p << " delta=" << _delta_cortical
              << " TSFU=" << t;
   if (usesMainDirection(_model))
@@ -2424,17 +2458,17 @@ OrthotropicPlasticityStressUpdate::applyCoralPreset()
   // No default: zeta = 0 is not acceptable and no calibrated coral value exists.
   for (const std::string n : {"zeta12", "zeta13", "zeta23"})
     if (!isParamSetByUser(n))
-      paramError(n, "plastic_model = coral requires zeta12, zeta13 and zeta23 to be set "
+      paramError(n, "the coral plastic model requires zeta12, zeta13 and zeta23 to be set "
                     "explicitly: there is no calibrated coral value yet and zeta = 0 is "
                     "not an acceptable placeholder.");
   _zeta12 = getParam<Real>("zeta12");
   _zeta13 = getParam<Real>("zeta13");
   _zeta23 = getParam<Real>("zeta23");
   if (_zeta12 == 0.0 || _zeta13 == 0.0 || _zeta23 == 0.0)
-    mooseWarning("plastic_model = coral with a zero zeta_ij: the normal stresses are "
+    mooseWarning("coral plastic model with a zero zeta_ij: the normal stresses are "
                  "uncoupled in that pair.");
 
-  Moose::out << "\n=== YIELD SURFACE: plastic_model = coral ===\n"
+  Moose::out << "\n=== YIELD SURFACE: model = coral ===\n"
              << "  sigma_xx: +" << _sigma_xx_tension << " / -" << _sigma_xx_compression << "\n"
              << "  sigma_yy: +" << _sigma_yy_tension << " / -" << _sigma_yy_compression << "\n"
              << "  sigma_zz: +" << _sigma_zz_tension << " / -" << _sigma_zz_compression << "\n"
@@ -2671,7 +2705,10 @@ OrthotropicPlasticityStressUpdate::runDebugChecks() const
     }
 
   const bool ok = gmax < 1e-5 && hmax < 1e-5 && rmax < 1e-5 && r_jump < 1e-4;
-  Moose::out << "FD check (" << getParam<MooseEnum>("plastic_model")
+  const MooseEnum fd_model = isParamSetByUser("plastic_model")
+                                 ? getParam<MooseEnum>("plastic_model")
+                                 : getParam<MooseEnum>("material_model");
+  Moose::out << "FD check (" << fd_model
              << ", 3 states with shear): yield gradient " << gmax << ", Hessian " << hmax
              << ", softening derivative " << rmax << ", r continuity " << r_jump
              << (ok ? "  OK" : "  FAILED") << "\n";

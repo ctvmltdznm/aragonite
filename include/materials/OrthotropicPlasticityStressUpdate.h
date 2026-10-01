@@ -93,6 +93,9 @@ protected:
   void resolvePostYieldAndViscosity();
   /// value of `name` if set by the user, otherwise `preset`
   Real resolve(const std::string & name, Real preset) const;
+  /// plastic_model if set, else the shared material_model, else legacy.
+  /// Non-virtual and base-state only: safe to call from the initialiser list.
+  MaterialModelPresets::Model resolveModel() const;
   /// warn about parameters the chosen plastic_model ignores
   void warnIgnored(const std::vector<std::string> & names) const;
 

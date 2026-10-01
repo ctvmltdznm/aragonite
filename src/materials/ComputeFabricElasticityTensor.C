@@ -19,7 +19,11 @@ ComputeFabricElasticityTensor::validParams()
       "(full orthotropy from C_ijkl) or legacy fabric elasticity. Optional per-element "
       "rotation from coupled Euler angles.");
 
+  params.addParam<MooseEnum>("material_model", MaterialModelPresets::modelEnum(),
+                             MaterialModelPresets::sharedModelDoc());
   params.addParam<MooseEnum>("elastic_model", MaterialModelPresets::modelEnum(),
+                             "Elastic model for THIS block only, overriding material_model. "
+                             "Leave unset to follow material_model. " +
                              MaterialModelPresets::modelDoc());
 
   // --------------------------------------------------------------------------
@@ -70,7 +74,7 @@ ComputeFabricElasticityTensor::validParams()
 
 ComputeFabricElasticityTensor::ComputeFabricElasticityTensor(const InputParameters & parameters)
   : ComputeElasticityTensorBase(parameters),
-    _model(static_cast<Model>(static_cast<int>(getParam<MooseEnum>("elastic_model")))),
+    _model(resolveModel()),
     _E_0(0), _nu_0(0), _G_0(0), _E_a(0), _nu_a(0), _G_a(0),
     _density_rho(getParam<Real>("density_rho")),
     _fabric_m1(getParam<Real>("fabric_m1")),
@@ -97,8 +101,12 @@ ComputeFabricElasticityTensor::ComputeFabricElasticityTensor(const InputParamete
   if (_fabric_m1 <= 0.0 || _fabric_m2 <= 0.0 || _fabric_m3 <= 0.0)
     mooseError("Fabric eigenvalues must be positive");
 
-  const MooseEnum model_name = getParam<MooseEnum>("elastic_model");
-  Moose::out << "\n=== ELASTICITY: elastic_model = " << model_name << " ===\n";
+  const MooseEnum model_name =
+      isParamSetByUser("elastic_model") ? getParam<MooseEnum>("elastic_model")
+                                        : getParam<MooseEnum>("material_model");
+  Moose::out << "\n=== ELASTICITY: model = " << model_name
+             << (isParamSetByUser("elastic_model") ? "  (elastic_model)" : "  (material_model)")
+             << " ===\n";
 
   // ==========================================================================
   // LEGACY: exactly the previous implementation
@@ -346,6 +354,33 @@ ComputeFabricElasticityTensor::buildOrthotropicStiffness(Real E1, Real E2, Real 
   return C;
 }
 
+MaterialModelPresets::Model
+ComputeFabricElasticityTensor::resolveModel() const
+{
+  // Precedence: the block-specific flag, then the shared one, then legacy.
+  // MOOSE applies [GlobalParams] through InputParameters::applyParameter, which
+  // only fills a parameter the block did not set and copies the "set by user"
+  // flag across, so isParamSetByUser() is true for a GlobalParams value and a
+  // per-block value always wins. That is exactly the precedence we want.
+  const bool spec_set = isParamSetByUser("elastic_model");
+  const bool shared_set = isParamSetByUser("material_model");
+  const MooseEnum spec = getParam<MooseEnum>("elastic_model");
+  const MooseEnum shared = getParam<MooseEnum>("material_model");
+
+  if (spec_set)
+  {
+    if (shared_set && static_cast<int>(spec) != static_cast<int>(shared))
+      mooseWarning("elastic_model = ", spec, " overrides material_model = ", shared,
+                   " in this block, so the elastic and plastic responses use different "
+                   "models. That is supported, but it is rarely intended: drop "
+                   "elastic_model to follow material_model.");
+    return static_cast<MaterialModelPresets::Model>(static_cast<int>(spec));
+  }
+  if (shared_set)
+    return static_cast<MaterialModelPresets::Model>(static_cast<int>(shared));
+  return MaterialModelPresets::Model::LEGACY;
+}
+
 Real
 ComputeFabricElasticityTensor::resolve(const std::string & name, Real preset) const
 {
@@ -357,8 +392,9 @@ ComputeFabricElasticityTensor::warnIgnored(const std::vector<std::string> & name
 {
   for (const auto & n : names)
     if (isParamSetByUser(n))
-      mooseWarning("Parameter '", n, "' is ignored for elastic_model = ",
-                   getParam<MooseEnum>("elastic_model"));
+      mooseWarning("Parameter '", n, "' is ignored for the elastic model ",
+                   isParamSetByUser("elastic_model") ? getParam<MooseEnum>("elastic_model")
+                                                     : getParam<MooseEnum>("material_model"));
 }
 
 Real
