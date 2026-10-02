@@ -6,12 +6,14 @@
 # follows from the isotropy constraint tau = 1/(S0*sqrt(2(1+zeta0))).
 #
 # LOAD CASE: simple SHEAR in the yz plane, engineering gamma = 2.0% at t = 1.
-#            Peak stress_yz = tau_yz_max x r(0).
+#            The field is homogeneous, so phi(sigma) = r(kappa) holds in the
+#            element averages to ~1e-5. The stress is NOT pure shear though:
+#            the yield surface is pressure sensitive, affine BCs forbid the
+#            dilatant part of the flow, and the normal reaction pushes the
+#            peak above tau_yz x r. That peak is reported, not asserted.
 #
 # Single HEX8 element, 1 x 1 x 1 mm. Run as is, no arguments:
 #     aragonite-opt -i shear_yz.i
-# Gold file:
-#     aragonite-opt -i shear_yz.i --generate-gold
 #
 # The elastic and plastic responses are BOTH driven by one flag,
 # material_model, set once in [GlobalParams]. Setting elastic_model or
@@ -90,10 +92,18 @@
 [BCs]
   # Affine (Taylor) boundary conditions on EVERY face:
   #     u_y = gamma * z * t,   the other two components zero.
-  # The deformation is homogeneous simple shear with engineering shear
-  # gamma = 0.02 at t = 1. Both the orthotropic stiffness and the quadric
-  # yield surface are block diagonal in the material frame, so the stress
-  # stays pure shear and the peak is tau_yz x r(0).
+  # Engineering shear gamma = 0.02 at t = 1. This prescribes the whole
+  # deformation gradient, so the field is homogeneous and every quadrature
+  # point sees the same state -- which is what makes the element-average
+  # CSV columns mean anything.
+  #
+  # The stress is NOT pure shear: the yield surface is pressure sensitive,
+  # so shear flow is dilatant, these BCs forbid the dilatation, and a
+  # normal reaction stress appears. The peak therefore sits above
+  # tau * r(kappa) and analyse_examples.py reports it as informational
+  # with the state purity alongside. Freeing the lateral directions to
+  # fix that breaks homogeneity and is much worse; see the docstring in
+  # generate_examples.py.
   [u_y]
     type = FunctionDirichletBC
     variable = disp_y

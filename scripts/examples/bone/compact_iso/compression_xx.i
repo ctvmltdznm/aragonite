@@ -9,8 +9,6 @@
 #
 # Single HEX8 element, 1 x 1 x 1 mm. Run as is, no arguments:
 #     aragonite-opt -i compression_xx.i
-# Gold file:
-#     aragonite-opt -i compression_xx.i --generate-gold
 #
 # The elastic and plastic responses are BOTH driven by one flag,
 # material_model, set once in [GlobalParams]. Setting elastic_model or

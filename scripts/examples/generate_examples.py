@@ -90,8 +90,6 @@ HEADER = """\
 #
 # Single HEX8 element, 1 x 1 x 1 mm. Run as is, no arguments:
 #     aragonite-opt -i {fname}
-# Gold file:
-#     aragonite-opt -i {fname} --generate-gold
 #
 # The elastic and plastic responses are BOTH driven by one flag,
 # material_model, set once in [GlobalParams]. Setting elastic_model or
@@ -152,32 +150,41 @@ def bcs_normal(case):
 
 
 def bcs_shear(case):
-    """Affine simple shear on every face -> homogeneous pure shear stress."""
+    """Affine (Taylor) BCs: every displacement component prescribed on every face.
+
+    This fully determines the deformation gradient, F = I + gamma*e_i(x)e_j and
+    nothing else, so the field is HOMOGENEOUS and every quadrature point sees the
+    same state. That is what makes the element-average CSV columns checkable at
+    all: phi(sigma) == r(kappa) holds pointwise, and with a uniform field it also
+    holds for the averages, to 1e-5.
+
+    The state is NOT pure shear, and cannot be. The quadric surface carries a
+    linear term, so it is pressure sensitive, and the associated flow for a pure
+    shear stress has normal components (N_11, N_22, N_33 run from 0.08 to 0.44 of
+    the flow direction). Affine BCs forbid that plastic dilatation, so a normal
+    reaction stress develops -- up to about -107 MPa for compact_ti -- and
+    sigma_xy ends up above tau * r. analyse_examples.py reports the resulting
+    state purity and treats the peak comparison as informational because of it.
+
+    DO NOT try to free the lateral directions to allow the dilatation. It was
+    tried: prescribing only the driven component affinely and holding the other
+    two on one face each. Removing those constraints does not just free the
+    normal strains, it also frees d(u_y)/d(x) and the whole u_z field, so the
+    element escapes into other shear modes -- a shear_xy run came back with an
+    xz stress 18% of the driven component -- and the field stops being
+    homogeneous. Once it is non-uniform, phi(average sigma) != r(average kappa)
+    and the consistency check collapses from 1e-5 to 0.4, not because the model
+    is wrong but because the averages no longer describe any single material
+    point. Homogeneity is worth more here than mode purity.
+
+    Getting both would need the normal faces traction-free AND d(u_y)/d(x) tied,
+    i.e. periodic or multi-point constraints. That is the right answer for a real
+    RVE and the wrong amount of machinery for a single-element teaching example.
+    """
     key = case.split("_")[1]
     comp, coord = SHEAR[key]
     others = [c for c in "xyz" if c != comp]
-    blocks = [textwrap.dedent(f"""\
-        [BCs]
-          # Affine (Taylor) boundary conditions on EVERY face:
-          #     u_{comp} = gamma * {coord} * t,   the other two components zero.
-          # The deformation is homogeneous simple shear with engineering shear
-          # gamma = {STRAIN} at t = 1. Both the orthotropic stiffness and the quadric
-          # yield surface are block diagonal in the material frame, so the stress
-          # stays pure shear and the peak is tau_{key} x r(0).
-          [u_{comp}]
-            type = FunctionDirichletBC
-            variable = disp_{comp}
-            boundary = {ALL_BOUNDARIES}
-            function = shear_fn
-          []""")]
-    for o in others:
-        blocks.append(f"  [u_{o}]\n"
-                      f"    type = DirichletBC\n"
-                      f"    variable = disp_{o}\n"
-                      f"    boundary = {ALL_BOUNDARIES}\n"
-                      f"    value = 0\n"
-                      f"  []")
-    blocks.append("[]")
+
     fn = textwrap.dedent(f"""\
         [Functions]
           [shear_fn]
@@ -185,7 +192,38 @@ def bcs_shear(case):
             expression = '{STRAIN} * {coord} * t'
           []
         []""")
-    return fn + "\n\n" + "\n".join(blocks)
+
+    out = [textwrap.dedent(f"""\
+        [BCs]
+          # Affine (Taylor) boundary conditions on EVERY face:
+          #     u_{comp} = gamma * {coord} * t,   the other two components zero.
+          # Engineering shear gamma = {STRAIN} at t = 1. This prescribes the whole
+          # deformation gradient, so the field is homogeneous and every quadrature
+          # point sees the same state -- which is what makes the element-average
+          # CSV columns mean anything.
+          #
+          # The stress is NOT pure shear: the yield surface is pressure sensitive,
+          # so shear flow is dilatant, these BCs forbid the dilatation, and a
+          # normal reaction stress appears. The peak therefore sits above
+          # tau * r(kappa) and analyse_examples.py reports it as informational
+          # with the state purity alongside. Freeing the lateral directions to
+          # fix that breaks homogeneity and is much worse; see the docstring in
+          # generate_examples.py.
+          [u_{comp}]
+            type = FunctionDirichletBC
+            variable = disp_{comp}
+            boundary = {ALL_BOUNDARIES}
+            function = shear_fn
+          []""")]
+    for o in others:
+        out.append(f"  [u_{o}]\n"
+                   f"    type = DirichletBC\n"
+                   f"    variable = disp_{o}\n"
+                   f"    boundary = {ALL_BOUNDARIES}\n"
+                   f"    value = 0\n"
+                   f"  []")
+    out.append("[]")
+    return fn + "\n\n" + "\n".join(out)
 
 
 BODY = """
@@ -313,7 +351,12 @@ BODY = """
 CASE_DOC = {
     "tension": "uniaxial TENSION along {a}, {s}% nominal strain at t = 1.\n#            Peak stress_{aa} = sigma_{aa}_tension x r(0).",
     "compression": "uniaxial COMPRESSION along {a}, {s}% nominal strain at t = 1.\n#            Peak |stress_{aa}| = sigma_{aa}_compression x r(0).",
-    "shear": "simple SHEAR in the {a} plane, engineering gamma = {s}% at t = 1.\n#            Peak stress_{aa} = tau_{aa}_max x r(0).",
+    "shear": "simple SHEAR in the {a} plane, engineering gamma = {s}% at t = 1.\n"
+             "#            The field is homogeneous, so phi(sigma) = r(kappa) holds in the\n"
+             "#            element averages to ~1e-5. The stress is NOT pure shear though:\n"
+             "#            the yield surface is pressure sensitive, affine BCs forbid the\n"
+             "#            dilatant part of the flow, and the normal reaction pushes the\n"
+             "#            peak above tau_{aa} x r. That peak is reported, not asserted.",
 }
 
 
@@ -352,25 +395,36 @@ def write_bone(out_dir):
 # are three orders below any mesh that resolves a coral grain, so production
 # runs regularise delta_0 up to roughly the element size. Here the element edge
 # is 1e-4 mm = 0.1 um and delta_0 = 1.91e-4 mm, a ratio near 2.
-CORAL = """\
+# Common text for the three coral interface tests. They differ only in the
+# header, the BCs and the drive amplitude, so they diff cleanly against each
+# other -- which is the point: one interface, three loading modes.
+CORAL_HEAD = """\
 # ============================================================================
 # coral -- two elements separated by a cohesive interface
+# LOADING: {mode}
 #
 # Two HEX8 grains with different crystal orientations, bonded by a
-# HomogenizedExponentialCZM interface, pulled apart along x. This is the
-# smallest complete version of the aragonite RVE setup: orthotropic elasticity
-# and quadric plasticity in the grains, a cohesive law at the boundary between
-# them.
+# HomogenizedExponentialCZM interface. This is the smallest complete version of
+# the aragonite RVE setup: orthotropic elasticity and quadric plasticity in the
+# grains, a cohesive law at the boundary between them.
 #
 # Run as is, no arguments:
-#     aragonite-opt -i coral_czm_two_element.i
+#     aragonite-opt -i {fname}
 #
-# WHAT TO LOOK FOR, in coral_czm_two_element_out.csv
-#   normal_traction rises to normal_strength (626 MPa), then softens.
-#   normal_jump is the interface opening; damage goes 0 -> 1 monotonically.
-#   The grains stay almost entirely elastic: the interface is far more
-#   compliant than the bulk, so nearly all the applied displacement goes into
-#   the opening, not into stretching the elements.
+{what}
+#
+# MODE MIXITY. The interface normal is x, so jump component 0 is the opening and
+# components 1 and 2 are the sliding. The model mixes the modes twice over:
+#   peak traction, by an elliptic interaction on the direction cosines of the
+#     jump vector,  T_peak = sqrt((sigma_n*rn)^2 + (tau_s*rs)^2 + (tau_t*rt)^2)
+#   characteristic opening, by the Wang 2025 mixed-mode form, which runs from
+#     delta_0_normal at pure opening to delta_0_tangent at pure sliding.
+# With sigma_n = 626, tau_s = tau_t = 374, delta_0_normal = 1.91e-4 and
+# delta_0_tangent = 2.17e-4 mm, that predicts:
+#     mode I      T_peak = 626.0 MPa   delta_0_eff = 1.91e-4 mm
+#     mode II     T_peak = 374.0 MPa   delta_0_eff = 2.17e-4 mm
+#     45 deg mix  T_peak = 515.6 MPa   delta_0_eff = 2.03e-4 mm
+# Those are the numbers to check this run against.
 #
 # MESH SCALE AND delta_0 -- read this before changing either.
 #   delta_0 is a characteristic opening, and what governs the numerics is its
@@ -379,13 +433,15 @@ CORAL = """\
 #   directly on this mesh the interface is in softening at the first increment
 #   and Newton stalls. Production runs therefore REGULARISE delta_0 up to
 #   roughly the element size. Here the element edge is 1e-4 mm (0.1 um) and
-#   delta_0 = 1.91e-4 mm, a ratio near 2. The peak traction, which is what
-#   sets failure initiation, is physical; the fracture energy is not.
+#   delta_0 is near 2e-4 mm, a ratio near 2. The peak traction, which sets
+#   failure initiation, is physical; the fracture energy is not.
 #
 # HEX8 is required. MOOSE hex-to-tet splitting leaves interface tractions
 # frozen at the regularisation floor.
 # ============================================================================
+"""
 
+CORAL_BODY = """
 [Mesh]
   [gen]
     type = GeneratedMeshGenerator
@@ -437,7 +493,7 @@ CORAL = """\
       incremental = true
       add_variables = true
       use_finite_deform_jacobian = true
-      generate_output = 'stress_xx stress_yy stress_zz strain_xx'
+      generate_output = 'stress_xx stress_yy stress_zz stress_xy strain_xx'
     []
   []
   # The cohesive block is a SIBLING of QuasiStatic, not nested inside it.
@@ -559,48 +615,20 @@ CORAL = """\
   []
 []
 
-[BCs]
-  [sym_x]
-    type = DirichletBC
-    variable = disp_x
-    boundary = left
-    value = 0
-  []
-  [sym_y]
-    type = DirichletBC
-    variable = disp_y
-    boundary = bottom
-    value = 0
-  []
-  [sym_z]
-    type = DirichletBC
-    variable = disp_z
-    boundary = back
-    value = 0
-  []
-  [pull_x]
-    # ~3 x delta_0, enough to take the interface through its peak and well into
-    # softening. Almost all of this is interface opening: the bulk stretches
-    # only about 7e-7 mm before the interface reaches 626 MPa.
-    type = FunctionDirichletBC
-    variable = disp_x
-    boundary = right
-    function = '6e-4*t'
-  []
-[]
+{bcs}
 
 [Postprocessors]
-  [stress_xx]
-    type = ElementAverageValue
-    variable = stress_xx
-  []
-  [strain_xx]
-    type = ElementAverageValue
-    variable = strain_xx
-  []
+  # The same set in all three modes, so the files diff cleanly and so mode
+  # purity is visible: in mode I the tangential columns stay at zero, in
+  # mode II the normal ones do, and in the mixed case both are active.
   [normal_traction]
     type = SideAverageValue
     variable = normal_traction
+    boundary = 'grain_1_grain_2'
+  []
+  [tangent_traction]
+    type = SideAverageValue
+    variable = tangent_traction
     boundary = 'grain_1_grain_2'
   []
   [normal_jump]
@@ -608,10 +636,28 @@ CORAL = """\
     variable = normal_jump
     boundary = 'grain_1_grain_2'
   []
+  [tangent_jump]
+    type = SideAverageValue
+    variable = tangent_jump
+    boundary = 'grain_1_grain_2'
+  []
   [interface_damage]
     type = SideAverageMaterialProperty
     property = damage
     boundary = 'grain_1_grain_2'
+  []
+  [interface_delta_eff]
+    type = SideAverageMaterialProperty
+    property = delta_eff
+    boundary = 'grain_1_grain_2'
+  []
+  [stress_xx]
+    type = ElementAverageValue
+    variable = stress_xx
+  []
+  [stress_xy]
+    type = ElementAverageValue
+    variable = stress_xy
   []
   [plastic_strain]
     type = ElementAverageMaterialProperty
@@ -642,6 +688,168 @@ CORAL = """\
 []
 """
 
+# BCs. Mode I keeps symmetry conditions, which let the bulk contract freely.
+# Modes II and mixed prescribe ALL THREE components on BOTH end faces, because
+# any unconstrained normal motion would let the interface open and contaminate
+# the mode. The bulk deforms by ~1e-6 mm before the interface reaches its peak,
+# three orders below the applied displacement, so the jump is essentially the
+# applied displacement in every case.
+CORAL_BCS_I = """\
+[BCs]
+  [sym_x]
+    type = DirichletBC
+    variable = disp_x
+    boundary = left
+    value = 0
+  []
+  [sym_y]
+    type = DirichletBC
+    variable = disp_y
+    boundary = bottom
+    value = 0
+  []
+  [sym_z]
+    type = DirichletBC
+    variable = disp_z
+    boundary = back
+    value = 0
+  []
+  [open_x]
+    # ~3 x delta_0_normal, through the peak and well into softening.
+    type = FunctionDirichletBC
+    variable = disp_x
+    boundary = right
+    function = '6e-4*t'
+  []
+[]"""
+
+CORAL_BCS_II = """\
+[BCs]
+  # grain_1 fully clamped
+  [fix_x]
+    type = DirichletBC
+    variable = disp_x
+    boundary = left
+    value = 0
+  []
+  [fix_y]
+    type = DirichletBC
+    variable = disp_y
+    boundary = left
+    value = 0
+  []
+  [fix_z]
+    type = DirichletBC
+    variable = disp_z
+    boundary = left
+    value = 0
+  []
+  # grain_2 slides in y with NO x motion, so the interface cannot open and the
+  # loading stays pure mode II.
+  [no_open_x]
+    type = DirichletBC
+    variable = disp_x
+    boundary = right
+    value = 0
+  []
+  [slide_y]
+    # ~3 x delta_0_tangent, through the peak and well into softening.
+    type = FunctionDirichletBC
+    variable = disp_y
+    boundary = right
+    function = '6.5e-4*t'
+  []
+  [no_z]
+    type = DirichletBC
+    variable = disp_z
+    boundary = right
+    value = 0
+  []
+[]"""
+
+CORAL_BCS_MIX = """\
+[BCs]
+  # grain_1 fully clamped
+  [fix_x]
+    type = DirichletBC
+    variable = disp_x
+    boundary = left
+    value = 0
+  []
+  [fix_y]
+    type = DirichletBC
+    variable = disp_y
+    boundary = left
+    value = 0
+  []
+  [fix_z]
+    type = DirichletBC
+    variable = disp_z
+    boundary = left
+    value = 0
+  []
+  # grain_2 moves at 45 degrees in the x-y plane: equal opening and sliding, so
+  # the jump direction cosines are rn = rs = 1/sqrt(2) and the elliptic
+  # interaction predicts T_peak = 515.6 MPa.
+  [open_x]
+    type = FunctionDirichletBC
+    variable = disp_x
+    boundary = right
+    function = '4.3e-4*t'
+  []
+  [slide_y]
+    type = FunctionDirichletBC
+    variable = disp_y
+    boundary = right
+    function = '4.3e-4*t'
+  []
+  [no_z]
+    type = DirichletBC
+    variable = disp_z
+    boundary = right
+    value = 0
+  []
+[]"""
+
+CORAL_CASES = {
+    "coral_czm_mode_I_opening.i": dict(
+        mode="MODE I, pure opening. grain_2 is pulled along x, the interface normal.",
+        bcs=CORAL_BCS_I,
+        what="""\
+# WHAT TO LOOK FOR, in the CSV
+#   normal_traction rises to 626 MPa, then softens.
+#   tangent_traction stays at zero: this is a pure mode.
+#   normal_jump is the opening; interface_damage goes 0 -> 1 monotonically.
+#   The grains stay almost entirely elastic. The interface is far more
+#   compliant than the bulk, so nearly all the applied displacement becomes
+#   opening rather than element stretch."""),
+    "coral_czm_mode_II_shear.i": dict(
+        mode="MODE II, pure sliding. grain_2 slides along y with x held, so the "
+             "interface\n#          shears without opening.",
+        bcs=CORAL_BCS_II,
+        what="""\
+# WHAT TO LOOK FOR, in the CSV
+#   tangent_traction rises to 374 MPa (the SHEAR strength, lower than the 626
+#     of mode I), then softens.
+#   normal_traction and normal_jump stay at zero: x is held on both faces.
+#   tangent_jump is the slip; interface_damage goes 0 -> 1 monotonically.
+#   Compare the peak against coral_czm_mode_I_opening.i: same interface, same
+#   damage law, different strength purely because of the loading direction."""),
+    "coral_czm_mixed_mode.i": dict(
+        mode="MIXED MODE, 45 degrees. grain_2 moves equally in x (opening) and "
+             "y (sliding).",
+        bcs=CORAL_BCS_MIX,
+        what="""\
+# WHAT TO LOOK FOR, in the CSV
+#   normal_traction and tangent_traction both rise and both soften; neither
+#     column is zero, which is what distinguishes this from the two pure modes.
+#   The resultant peak should be 515.6 MPa, between the mode I 626 and the
+#     mode II 374, exactly as the elliptic interaction predicts for
+#     rn = rs = 1/sqrt(2).
+#   normal_jump and tangent_jump stay equal to each other throughout, which is
+#     the check that the 45 degree path held."""),
+}
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -651,9 +859,11 @@ def main():
     n = write_bone(a.out)
     d = os.path.join(a.out, "coral")
     os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, "coral_czm_two_element.i"), "w") as f:
-        f.write(CORAL)
-    print(f"wrote {n} bone inputs and 1 coral input under {a.out}/")
+    for fname, cfg in CORAL_CASES.items():
+        head = CORAL_HEAD.format(mode=cfg["mode"], what=cfg["what"], fname=fname)
+        with open(os.path.join(d, fname), "w") as f:
+            f.write(head + CORAL_BODY.format(bcs=cfg["bcs"]))
+    print(f"wrote {n} bone inputs and {len(CORAL_CASES)} coral inputs under {a.out}/")
 
 
 if __name__ == "__main__":
