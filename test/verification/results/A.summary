@@ -1,18 +1,14 @@
 --- results/A_full.log
-    attempts 1203   converged 1200   failed 3   time reached 120   dt min/max 1e-12/0.1
-    Newton its/step  total 2400   histogram  2:1200
-    nonlinear DIVERGED: {'DIVERGED_LINE_SEARCH': 3}
-    first failure: step 1201 t=120 dt=2.54e-12  |R|: 2.528e-10, 4.023e-12, 3.181e-12, 2.887e-12, 2.744e-12, 2.429e-12, 2.086e-12, 1.371e-12
-    C_ep fallbacks 0   Newton->Primal 0
+    attempts 1201   converged 1201   failed 0   time reached 120   dt min/max 2.54e-12/0.1
+    Newton its/step  total 2401   histogram  1:1  2:1200
+    C_ep fallbacks 0   Newton->Primal 0   (from warning lines, which are GATED to the first 5 each: treat any 5 as 'at least 5'. No totals line means zero fallbacks, or a binary predating the timestepSetup report.)
 --- results/A_ref.log  [reference]
-    attempts 1203   converged 1200   failed 3   time reached 120   dt min/max 1e-12/0.1
-    Newton its/step  total 5760   histogram  2:360  6:840
+    attempts 1201   converged 1201   failed 0   time reached 120   dt min/max 2.54e-12/0.1
+    Newton its/step  total 5761   histogram  1:1  2:360  6:840
     plastic steps (>=3 its): n=840  median 6  max 6
     convergence order p  median 1.00   last-step contraction median 0.0394   (linear)
-    nonlinear DIVERGED: {'DIVERGED_LINE_SEARCH': 3}
-    first failure: step 1201 t=120 dt=2.54e-12  |R|: 5.734e-09, 8.092e-12, 2.831e-12, 2.829e-12, 2.829e-12, 2.828e-12
-    C_ep fallbacks 0   Newton->Primal 0
---- Newton total: test 2400 vs reference 5760  (2.4x fewer)
+    C_ep fallbacks 0   Newton->Primal 0   (from warning lines, which are GATED to the first 5 each: treat any 5 as 'at least 5'. No totals line means zero fallbacks, or a binary predating the timestepSetup report.)
+--- Newton total: test 2401 vs reference 5761  (2.4x fewer)
 --- CSV  ref=results/A_ref.csv  test=results/A_full.csv
     common time points 1201  (ref 1201, test 1201)   last common t=120
     ok   plastic_strain             max rel 1.26e-12  max abs 4.76e-14  at t=36.4

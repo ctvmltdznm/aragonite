@@ -10,6 +10,9 @@
 #   ./run_tests.sh D             bone cube, production settings, 3 steps
 #   NOREF=1 ./run_tests.sh D     ... without the expensive elastic reference
 #   ./run_tests.sh Ddt           bone step-size study (dt = 0.025)
+#   ./run_tests.sh D1            bone, ONE step at PROD: baseline for Dls/Dksp
+#   ./run_tests.sh Dls           ... line_search = none   (is bt damping us?)
+#   KSPRTOL=1e-3 ./run_tests.sh Dksp   ... ksp_rtol sweep (answered: use 1e-4)
 #   ./run_tests.sh Dtol          bone tolerance control (nl_abs_tol = 1e-8)
 #   ./run_tests.sh V             every viscosity mode on the single element
 #   MODE=exponential ./run_tests.sh Vr   rate-dependence + dt-independence check
@@ -49,13 +52,30 @@ TOL=${TOL:-1e-5}                               # relative, per CSV column
 # values that were tuned around a broken tangent and are now all too loose.
 # ksp_rtol lives inside petsc_options_value, so it is overridden as a vector.
 # (array, because the petsc option string contains spaces)
+#
+# ksp_rtol MEASURED on cube_tension_22, 1 step, dt = 0.1, 32 ranks (2026-10-02).
+# Every value gives the SAME 23 Newton iterations and the same answer; rtol
+# buys or burns wall time only. ~92% of a step is the linear solve.
+#     rtol    its   wall    last contraction   final |R|     linear DIVERGED
+#     1e-10    23   4073 s      1.04e-3        7.467892e-08       17
+#     1e-6     23   1673 s      1.04e-3        7.467997e-08        0
+#     1e-4     23    920 s      1.03e-3        7.461488e-08        0   <- USE
+#     1e-3     23    713 s      4.82e-3        4.282094e-07        0
+# 1e-4 is 1.8x faster than 1e-6 and identical to 1e-10 in every meaningful
+# column. 1e-3 is rejected: the asymptotic contraction degrades 5x and the
+# final |R| stops satisfying nl_rel_tol = 1e-8, falling through to
+# nl_abs_tol = 1e-6 with only 2.3x margin -- no headroom for the harder
+# steps 2-3 (25-26 its), where losing it costs a dt cutback.
+# Tightening is pointless: gamg cannot reach 1e-10 in 500 GMRES iterations.
 PROD=(
   Materials/plasticity/absolute_tolerance=1e-8
   Executioner/line_search=bt
   Executioner/nl_abs_tol=1e-6
-  "Executioner/petsc_options_value=gamg 2 gmres 300 200 1e-6"
+  Executioner/nl_rel_tol=1e-8
+  "Executioner/petsc_options_value=gamg 2 gmres 300 200 1e-4"
   Physics/SolidMechanics/QuasiStatic/all/use_finite_deform_jacobian=true
 )
+KSPRTOL=${KSPRTOL:-}    # set to sweep rtol in the Dksp target below
 # -----------------------------------------------------------------------------
 
 mkdir -p results
@@ -339,6 +359,9 @@ PY
 
   Ddt)  # step-size study: same total strain as D step 1, in 4 increments.
         # Tests whether the line-search damping is caused by the step size.
+        # RESULT (2026-10-02): 10 its/step at dt=0.025 vs 22 at dt=0.1. Since
+        # that is 4x the steps, it is 40 its for the same strain against 22 --
+        # refining dt is a NET LOSS here. The lever is Dls/Dksp below.
     run Ddt_full "$MPI_BONE" "$BONE" Outputs/csv/file_base=results/Ddt_full \
       Outputs/exo_out/file_base=results/Ddt_exo \
       Executioner/dt=0.025 Executioner/end_time=0.1 "${PROD[@]}"
@@ -346,17 +369,65 @@ PY
       | tee results/Ddt.summary
     ;;
 
+  D1)   # ONE step at the current PROD settings: the baseline Dls and Dksp are
+        # measured against. Needed because the 22-its figure was taken before
+        # nl_rel_tol = 1e-8 joined PROD; at 1e-5 the solve stopped early.
+        # No reference: these targets measure iteration count, not the answer.
+    run D1 "$MPI_BONE" "$BONE" Outputs/csv/file_base=results/D1 \
+      Outputs/exo_out/file_base=results/D1_exo \
+      Executioner/num_steps=1 "${PROD[@]}"
+    python3 "$ANALYZE" results/D1.log | tee results/D1.summary
+    ;;
+
+  Dls)  # is the tangent good, or is bt saving us from a bad step?
+        # Step 1 of D showed |R| falling at a CONSTANT 0.90 for 13 iterations,
+        # which is a fixed fractional step lambda ~ 0.1 -- bt computing the
+        # Newton direction and discarding 90% of it. Two outcomes:
+        #   converges in far fewer its  -> bt was over-cautious, free 3x
+        #   |R| rises / diverges        -> the full step really does overshoot,
+        #                                  bt is earning its keep, lever is Dksp
+    run Dls "$MPI_BONE" "$BONE" Outputs/csv/file_base=results/Dls \
+      Outputs/exo_out/file_base=results/Dls_exo \
+      Executioner/num_steps=1 "${PROD[@]}" Executioner/line_search=none
+    python3 "$ANALYZE" results/Dls.log --ref-log results/D1.log \
+      | tee results/Dls.summary
+    ;;
+
+  Dksp) # ksp_rtol sweep. ANSWERED (see the PROD table): rtol does not change
+        # the Newton iteration, only wall time, and 1e-4 is the production
+        # value. Kept so the measurement is reproducible on a new mesh:
+        #     KSPRTOL=1e-3 ./run_tests.sh Dksp
+        # max_it scales with rtol: 200 suffices at 1e-4 and looser; 1e-10
+        # needs more than 500 and still fails 17 of 23 solves.
+    RT=${KSPRTOL:-1e-3}
+    MI=200; case $RT in 1e-8|1e-9|1e-10) MI=500 ;; esac
+    echo "--- Dksp  ksp_rtol = $RT  ksp_max_it = $MI"
+    run "Dksp_$RT" "$MPI_BONE" "$BONE" Outputs/csv/file_base=results/Dksp_$RT \
+      Outputs/exo_out/file_base=results/Dksp_${RT}_exo \
+      Executioner/num_steps=1 "${PROD[@]}" \
+      "Executioner/petsc_options_value=gamg 2 gmres 300 $MI $RT"
+    python3 "$ANALYZE" "results/Dksp_$RT.log" --ref-log results/D1.log \
+      --ref results/D1.csv --test "results/Dksp_$RT.csv" --tol "$TOL" \
+      | tee "results/Dksp_$RT.summary"
+    ;;
+
   Dtol) # tolerance control: same tangent, 100x tighter nonlinear tolerance.
+        # Must override nl_rel_tol, NOT nl_abs_tol: PROD's nl_rel_tol = 1e-8
+        # is what actually terminates the solve (final |R| rel = 6.3e-9), so
+        # an nl_abs_tol override is never reached and this target would be
+        # identical to D.
         # If D vs Dtol differs as much as D_full vs D_ref, the difference is
         # solver tolerance, not the tangent.
     run Dtol_full "$MPI_BONE" "$BONE" Outputs/csv/file_base=results/Dtol_full \
       Outputs/exo_out/file_base=results/Dtol_exo \
-      Executioner/end_time=0.3 "${PROD[@]}" Executioner/nl_abs_tol=1e-8
+      Executioner/end_time=0.3 "${PROD[@]}" \
+      Executioner/nl_rel_tol=1e-10 Executioner/nl_abs_tol=1e-9
     python3 "$ANALYZE" results/Dtol_full.log --ref-log results/D_full.log \
       --ref results/D_full.csv --test results/Dtol_full.csv --tol "$TOL" \
       | tee results/Dtol.summary
     ;;
 
-  *) echo "unknown test '$T' (use: fd M A B Bt Bs Bf V Vr P C D Ddt Dtol)";;
+  *) echo "unknown test '$T' (use: fd M A B Bt Bs Bf V Vr P C D D1 Dls Dksp Ddt Dtol)";;
   esac
 done
+

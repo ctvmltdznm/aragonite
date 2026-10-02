@@ -35,15 +35,11 @@ RE_STEP = re.compile(r"Time Step\s+(\d+),\s*time\s*=\s*([-+0-9.eE]+),\s*dt\s*=\s
 RE_NL = re.compile(r"^\s*(\d+)\s+Nonlinear \|R\|\s*=\s*([-+0-9.eE]+|nan|inf)", re.I)
 RE_NL_FAIL = re.compile(r"Nonlinear solve did not converge due to (\w+)")
 RE_L_FAIL = re.compile(r"Linear solve did not converge due to (\w+)")
-# Run-end totals printed by ~OrthotropicPlasticityStressUpdate. The in-run
-# warnings are gated to the first few occurrences, so counting warning lines
-# undercounts; these totals are complete. One line per material object, so
-# they are summed.
-RE_TOTALS = re.compile(r"totals:\s*Newton->Primal\s+(\d+),\s*C_ep fallbacks\s+(\d+)")
-# These lines are CUMULATIVE per material object and are reprinted whenever a
-# counter changes, so take the max, not the sum. With several material objects
-# (threads, blocks) that is a lower bound; the per-object numbers are not
-# distinguishable in the log.
+# an undamped Newton step can invert elements; MOOSE recovers by cutting dt, so
+# the only trace is these lines. Without them a run that wrecked the mesh seven
+# times looks, in the summary, like a run that took very few iterations.
+RE_DEGEN = re.compile(r"Degenerate map|libMesh degeneracy exception")
+RE_RASHID = re.compile(r"Rashid approximation for the rotation tensor")
 
 
 def parse_log(path):
@@ -54,10 +50,10 @@ def parse_log(path):
     fallbacks = 0
     fallback_lines = []
     primal = 0
-    primal_total = None
-    fallback_total = None
     fd_line = None
     mandel_line = None
+    degen = 0
+    rashid = 0
 
     with open(path, errors="replace") as f:
         for raw in f:
@@ -85,33 +81,34 @@ def parse_log(path):
             m = RE_L_FAIL.search(line)
             if m:
                 lin_fail[m.group(1)] += 1
-            # exact warning text, so the run-end totals line ("C_ep fallbacks N")
-            # is not miscounted as a fallback event
-            if "C_ep fallback to elastic" in line:
+            if "C_ep fallback" in line:
                 fallbacks += 1
                 if len(fallback_lines) < 5:
                     fallback_lines.append(line.strip())
             if "switching to Primal" in line:
                 primal += 1
-            m = RE_TOTALS.search(line)
-            if m:
-                primal_total = max(primal_total or 0, int(m.group(1)))
-                fallback_total = max(fallback_total or 0, int(m.group(2)))
             if fd_line is None and "FD check" in line:
                 fd_line = line.strip()
             if mandel_line is None and "Mandel round-trip" in line:
                 mandel_line = line.strip()
+            if RE_DEGEN.search(line):
+                degen += 1
+            if RE_RASHID.search(line):
+                rashid += 1
 
     return dict(attempts=attempts, diverged=diverged, lin_fail=lin_fail,
                 fallbacks=fallbacks, fallback_lines=fallback_lines,
-                primal=primal, primal_total=primal_total,
-                fallback_total=fallback_total,
-                fd_line=fd_line, mandel_line=mandel_line)
+                primal=primal, fd_line=fd_line, mandel_line=mandel_line,
+                degen=degen, rashid=rashid)
 
 
 def newton_stats(attempts):
     conv = [a for a in attempts if a["converged"]]
     its = [max(len(a["res"]) - 1, 0) for a in conv]
+    # iterations burned on attempts that were then thrown away. Reporting only
+    # the converged ones made a run that failed 7 times and cut dt by 128x
+    # print "total 2", which then read as 11.5x FEWER than a healthy run.
+    wasted = sum(max(len(a["res"]) - 1, 0) for a in attempts if not a["converged"])
     orders, ratios = [], []
     for a in conv:
         r = [x for x in a["res"] if x > 0 and math.isfinite(x)]
@@ -122,7 +119,8 @@ def newton_stats(attempts):
                 ratios.append(r3 / r2)
     plastic_its = [i for i in its if i >= 3]
     return dict(n_conv=len(conv), its=its, plastic_its=plastic_its,
-                orders=orders, ratios=ratios)
+                orders=orders, ratios=ratios, wasted=wasted,
+                its_all=sum(its) + wasted)
 
 
 def fmt_hist(its):
@@ -138,12 +136,17 @@ def report_log(name, P):
     print(f"--- {name}")
     if not A:
         print("    no time steps found (wrong file?)")
+        S["last_ok"] = float("nan")
         return S
     last_ok = max((a["time"] for a in A if a["converged"]), default=float("nan"))
     print(f"    attempts {len(A)}   converged {S['n_conv']}   failed {len(failed)}"
           f"   time reached {last_ok:g}   dt min/max {min(dts):.3g}/{max(dts):.3g}")
+    S["last_ok"] = last_ok
     if S["its"]:
         print(f"    Newton its/step  total {sum(S['its'])}   histogram  {fmt_hist(S['its'])}")
+    if S["wasted"]:
+        print(f"    WASTED: {S['wasted']} more iterations on {len(failed)} failed attempt(s)"
+              f"   -> {S['its_all']} total work, not {sum(S['its'])}")
     if S["plastic_its"]:
         print(f"    plastic steps (>=3 its): n={len(S['plastic_its'])}"
               f"  median {statistics.median(S['plastic_its']):g}  max {max(S['plastic_its'])}")
@@ -155,23 +158,15 @@ def report_log(name, P):
         print(f"    nonlinear DIVERGED: {dict(P['diverged'])}")
     if P["lin_fail"]:
         print(f"    linear DIVERGED:    {dict(P['lin_fail'])}")
+    if P["degen"] or P["rashid"]:
+        print(f"    MESH WRECKED: {P['degen']} inverted-element exception(s),"
+              f" {P['rashid']} Rashid sqrt(<0) -- the step is overshooting, not"
+              f" merely converging slowly")
     if failed:
         a = failed[0]
         rs = ", ".join(f"{x:.3e}" for x in a["res"][:8])
         print(f"    first failure: step {a['step']} t={a['time']:g} dt={a['dt']:.3g}  |R|: {rs}")
-    # Prefer the run-end totals; the warning lines are gated to the first few.
-    if P["primal_total"] is not None:
-        gated = ""
-        if P["primal_total"] > P["primal"] or P["fallback_total"] > P["fallbacks"]:
-            gated = f"   (warning lines seen: {P['fallbacks']} / {P['primal']}, gated)"
-        print(f"    C_ep fallbacks {P['fallback_total']}   "
-              f"Newton->Primal {P['primal_total']}{gated}"
-              "   [cumulative through the second-to-last step]")
-    else:
-        print(f"    C_ep fallbacks {P['fallbacks']}   Newton->Primal {P['primal']}"
-              "   (from warning lines, which are GATED to the first 5 each: treat"
-              " any 5 as 'at least 5'. No totals line means zero fallbacks, or a"
-              " binary predating the timestepSetup report.)")
+    print(f"    C_ep fallbacks {P['fallbacks']}   Newton->Primal {P['primal']}")
     for l in P["fallback_lines"]:
         print(f"      {l}")
     if P["fd_line"]:
@@ -259,8 +254,20 @@ def main():
     if a.ref_log:
         Sr = report_log(a.ref_log + "  [reference]", parse_log(a.ref_log))
         if S["its"] and Sr["its"]:
-            print(f"--- Newton total: test {sum(S['its'])} vs reference {sum(Sr['its'])}"
-                  f"  ({sum(Sr['its']) / max(sum(S['its']), 1):.1f}x fewer)")
+            t_t, t_r = S.get("last_ok"), Sr.get("last_ok")
+            same_t = (t_t is not None and t_r is not None
+                      and math.isfinite(t_t) and math.isfinite(t_r)
+                      and abs(t_t - t_r) <= 1e-9 * max(abs(t_r), 1.0))
+            print(f"--- Newton total: test {S['its_all']} vs reference {Sr['its_all']}"
+                  f"  (including iterations on failed attempts)")
+            if same_t:
+                # a ratio only means anything when both runs did the same work
+                print(f"    both reached t={t_t:g}:"
+                      f"  {Sr['its_all'] / max(S['its_all'], 1):.1f}x fewer")
+            else:
+                print(f"    NOT COMPARABLE: test reached t={t_t:g}, reference t={t_r:g}."
+                      f" A run that stalls early does fewer iterations BECAUSE it failed;"
+                      f" that is not a speedup.")
     if a.ref and a.test:
         compare_csv(a.ref, a.test, a.tol, a.atol, a.tmax, a.cols)
 
