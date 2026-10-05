@@ -145,7 +145,7 @@ OrthotropicPlasticityStressUpdate::validParams()
   
   // Viscoplasticity
   //params.addParam<bool>("use_viscoplasticity", false, "Enable viscoplastic regularization");
-  params.addParam<Real>("eta", 1e-3, "Inverse viscosity parameter (MPa*s)^-1");
+  params.addParam<Real>("eta", 1e-3, "Viscosity parameter [s/MPa]");
   
   // Damage
   params.addParam<bool>("use_damage", false, "Enable damage evolution");
