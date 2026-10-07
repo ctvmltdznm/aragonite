@@ -61,8 +61,6 @@ HomogenizedExponentialCZM::validParams()
     "0 = all QPs identical (not recommended for polycrystal simulations).");
   params.addParam<unsigned int>("spatial_random_seed", 1234,
     "Seed for spatial quality factor field. Change to generate different realisations.");
-  params.addParam<Real>("normal_gap_tol", 1e-8,
-    "Normal gap threshold for mode-ratio computation (mm).");
   return params;
 }
 
@@ -78,7 +76,6 @@ HomogenizedExponentialCZM::HomogenizedExponentialCZM(const InputParameters & par
     _eta(getParam<Real>("eta")),
     _failure_traction_ratio(getParam<Real>("failure_traction_ratio")),
     _damage_viscosity(getParam<Real>("damage_viscosity")),
-    _normal_gap_tol(getParam<Real>("normal_gap_tol")),
     _quality_std_dev(getParam<Real>("quality_std_dev")),
     _spatial_quality_std_dev(getParam<Real>("spatial_quality_std_dev")),
     _spatial_random_seed(getParam<unsigned int>("spatial_random_seed")),
