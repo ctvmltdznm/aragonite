@@ -85,9 +85,9 @@ field it also holds for the averages, to about 1e-5.
 **The shear state is not pure shear, and cannot be made so on one element.** The
 quadric surface carries a linear term, so it is pressure sensitive, and the
 associated flow for a pure shear stress has normal components (`N_11`, `N_22`,
-`N_33` run from 0.08 to 0.44 of the flow direction depending on the preset).
+`N_33` run from 0.22 to 0.62 of the flow direction depending on the preset).
 Affine BCs forbid that plastic dilatation, so a normal reaction stress develops,
-up to about -107 MPa for `compact_ti`, and `stress_xy` ends up above `tau * r`.
+up to about -40 to -44 MPa for he compact presets and about -1 MPa for the trabecular ones at 2% shear.
 The analyser therefore reports the **state purity** at the peak and treats the
 peak comparison as informational, rather than asserting a relation that does not
 hold.
@@ -189,9 +189,9 @@ so they diff cleanly against each other.
  
 | file | loading | predicted `T_peak` | predicted `delta_0_eff` |
 |---|---|---|---|
-| `coral_czm_mode_I_opening.i` | pull along x (the interface normal) | 626.0 MPa | 1.91e-4 mm |
-| `coral_czm_mode_II_shear.i` | slide along y, x held | 374.0 MPa | 2.17e-4 mm |
-| `coral_czm_mixed_mode.i` | 45 deg, equal opening and sliding | 515.6 MPa | 2.03e-4 mm |
+| `coral_czm_mode_I_opening.i` | pull along x (the interface normal) | 626.0 MPa | 1.91e-4 µm |
+| `coral_czm_mode_II_shear.i` | slide along y, x held | 374.0 MPa | 2.17e-4 µm |
+| `coral_czm_mixed_mode.i` | 45 deg, equal opening and sliding | 515.6 MPa |2.03e-4 µm |
  
 The interface normal is x, so jump component 0 is opening and components 1 and 2
 are sliding. The model mixes the modes **twice over**:
@@ -214,24 +214,35 @@ in the mixed case neither does.
 conditions so the bulk can contract freely. Modes II and mixed prescribe all
 three components on both end faces, because any unconstrained normal motion
 would let the interface open and contaminate the mode. The bulk deforms by about
-1e-6 mm before the interface reaches its peak, three orders below the applied
+1e-6 µm before the interface reaches its peak, three orders below the applied
 displacement, so in every case the jump is essentially the applied displacement.
  
-**`delta_0` and the mesh scale.** This is the parameter that confuses people.
-`delta_0` is a characteristic opening, and what governs the numerics is its
-ratio to the element size. The MD values are about 0.19 nm, three orders below
-any mesh that resolves a coral grain; used directly they put the interface in
-softening at the first increment and Newton stalls. Production runs regularise
-`delta_0` up to roughly the element size. Here the element edge is 1e-4 mm
-(0.1 um) and `delta_0` is near 2e-4 mm, a ratio near 2. The peak traction, which
-sets failure initiation, is physical. The fracture energy is not.
+**`delta_0` and the length unit.** Lengths are in micrometres. `delta_0_normal`
+= 1.91e-4 and `delta_0_tangent` = 2.17e-4 are the MD values, 0.19 nm and
+0.22 nm, used unchanged. They are separations beyond the equilibrium interface
+(the organic layer itself is about 1 nm thick); the zero-thickness cohesive
+element represents only that extra separation. The values are provisional.
+
+Do not enter these openings in millimetres. The class smooths the opening
+with a fixed width of 1e-6 in mesh units, which must stay far below `delta_0`;
+in millimetres `delta_0` would be 1.9e-7 and the interface would start out
+damaged. Keep `delta_0` at or above 1e-4 in mesh units.
+
+The element edge here is 1e-4 µm. That is not a grain size: these are
+single-interface tests, and the bulk elements are only there to carry the
+load to the interface. What governs the numerics is the displacement
+increment per step relative to `delta_0`, which these inputs keep small. The
+peak traction is physical; the post-peak branch depends on `eta`, which is a
+regularisation choice.
  
 `zeta12/13/23` have no default and must be set: zero is not an acceptable
 placeholder and no calibrated coral value exists yet. The 0.27 in the examples is
 provisional, carried over from the bone value.
  
-HEX8 is required for the cohesive interface. MOOSE hex-to-tet splitting leaves
-interface tractions frozen at the regularisation floor.
+Hexahedral and tetrahedral meshes both work with the cohesive interface. One
+failure has been seen: tetrahedra made by MOOSE's hex-to-tet conversion left
+the interface tractions at the regularisation floor. Mesh with tetrahedra
+directly instead of converting.
  
 ## Running them
  
@@ -295,12 +306,11 @@ prediction, mode purity (the off-mode traction as a fraction of the loaded one),
 that damage never decreases, and for the mixed case that the two jumps stay
 equal, which is the check that the 45 deg path held.
  
-**Tolerances are defaults chosen before any real run of these inputs existed.**
-They are `--tol-elastic 2e-2`, `--tol-yield 1e-2`, `--tol-peak 3e-2`,
-`--tol-quiet 1e-3`. Treat a marginal FAIL as a prompt to look, not a verdict,
-and tighten them once a clean baseline exists. The floor on check 2 is set by
-FINITE strain: the CSV reports Cauchy stress and at 2% strain that differs from
-the measure the return map uses in the third digit.
+**Tolerances.** `--tol-elastic 2e-2`, `--tol-yield 2e-3`, `--tol-peak 3e-2`.
+The yield tolerance was tightened from 1e-2 after the first clean baseline:
+the worst observed `|phi/r - 1|` is 4.5e-4. The floor on that check is set by
+FINITE strain: the CSV reports Cauchy stress, and at 2% strain that differs
+from the measure the return map uses in the fourth digit.
  
 ### Is the analyser itself right?
  
