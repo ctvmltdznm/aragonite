@@ -30,7 +30,6 @@ protected:
   const Real _eta;
   const Real _failure_traction_ratio;
   const Real _damage_viscosity;
-  const Real _normal_gap_tol;
 
   // ── Homogenisation ─────────────────────────────────────────────────────────
   // _quality_std_dev        : within-QP contact spread (GH quadrature)
