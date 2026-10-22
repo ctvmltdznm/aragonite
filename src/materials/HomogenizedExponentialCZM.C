@@ -264,6 +264,17 @@ HomogenizedExponentialCZM::computeInterfaceTractionAndDerivatives()
     const Real kappa_g     = std::max(kappa_old_g, delta_eff);
     _qp_kappa[_qp][g]      = kappa_g;
 
+    // Damage acts on the secant ray through the peak once this class has passed it.
+    // (1 - D) * T_peak * r reproduces e r^eta exp(-r^eta) exactly on monotonic loading,
+    // and unloading/reloading becomes linear to the origin (secant).
+    Real T_base_g  = T_und_g;
+    Real dT_base_g = dT_und_g;
+    if (kappa_g >= d0_g && d0_g > 1e-20)
+    {
+      T_base_g  = T_peak_g * delta_eff / d0_g;
+      dT_base_g = T_peak_g / d0_g;
+    }
+
     // dkappa/d(delta_eff): 1 if currently at the maximum, 0 during unloading
     const Real dkappa_deff = (delta_eff >= kappa_old_g - 1e-14) ? 1.0 : 0.0;
 
@@ -339,7 +350,7 @@ HomogenizedExponentialCZM::computeInterfaceTractionAndDerivatives()
     _qp_damage[_qp][g] = D_g;
 
     // ── Past delta_c: force complete failure, bypass viscous delay ─────────
-    // Once kappa >= dc_g the contact is fully separated. 
+    // Once kappa >= dc_g the contact is fully separated.
     if (kappa_g >= dc_g)
     {
       D_g                = 1.0;
@@ -352,10 +363,10 @@ HomogenizedExponentialCZM::computeInterfaceTractionAndDerivatives()
 
     // ── Accumulate ──
     const Real w_g = GH_WEIGHTS[g];
-    T_sum          += w_g * T_und_g * (1.0 - D_g);
-    dT_sum         += w_g * ((1.0 - D_g) * dT_und_g - T_und_g * dD_deff_g);
+    T_sum          += w_g * T_base_g * (1.0 - D_g);
+    dT_sum         += w_g * ((1.0 - D_g) * dT_base_g - T_base_g * dD_deff_g);
     D_sum          += w_g * D_g;
-    dT_und_eff_sum += w_g * (1.0 - D_g) * dT_und_g;  // elastic-only (no damage deriv)
+    dT_und_eff_sum += w_g * (1.0 - D_g) * dT_base_g;
   }
 
   _damage[_qp] = D_sum;
