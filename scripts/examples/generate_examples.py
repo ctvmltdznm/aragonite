@@ -475,6 +475,11 @@ CORAL_BODY = """
     input = rename
     split_interface = true
   []
+
+  # Required by newer MOOSE: a displaced mesh is refused together with the
+  # disjoint neighbour pairs BreakMeshByBlockGenerator creates. strain = SMALL
+  # needs no displaced mesh, so this is correct on old and new MOOSE alike.
+  use_displaced_mesh = false
 []
 
 [GlobalParams]
@@ -611,7 +616,7 @@ CORAL_BODY = """
     quality_std_dev         = 0.1
     spatial_quality_std_dev = 0.1
     spatial_random_seed     = 1234
-    damage_viscosity        = 0.1
+    damage_viscosity        = 0
   []
 []
 

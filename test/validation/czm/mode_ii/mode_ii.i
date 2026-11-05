@@ -38,6 +38,14 @@
     input = block2
     split_interface = true
   []
+
+  # Newer MOOSE refuses a displaced mesh together with the disjoint neighbour
+  # pairs BreakMeshByBlockGenerator creates, and aborts on GlobalParams/
+  # displacements below. strain = SMALL needs no displaced mesh, so this is
+  # both correct and version-portable. Without it a clean MOOSE checkout fails
+  # with "A displaced mesh cannot be used with a mesh that has disjoint
+  # neighbor boundary pairs".
+  use_displaced_mesh = false
 []
 
 [GlobalParams]
@@ -175,7 +183,22 @@
   [elasticity]
     type = ComputeElasticityTensorCoupled
     fill_method = symmetric9
-    C_ijkl = '171800 57500 30200 106700 46900 84200 42100 31100 46600'
+    # RIGID BULK (x 1e4). This test checks the CZM as a MATERIAL POINT. With
+    # the real aragonite stiffness the interface (initial stiffness
+    # e*700/1.2e-4 = 1.6e7 MPa/um) is ~100x stiffer than the bulk, so the
+    # clamped blocks twist and bend: on a 16-element interface the local
+    # tangent-2 jump reached +-0.4x the tangent-1 jump while averaging to
+    # 1e-20, and the normal jump varied by ~50%. One interface element then
+    # averages 4 quadrature points in very different states, no constitutive
+    # check on the averages can hold, and the result depends on the mesh.
+    # x 1e4 makes the bulk ~100x stiffer than the interface: grain 1 stays put,
+    # grain 2 translates with its prescribed face, and the interface jump IS
+    # the prescribed displacement, uniform to ~1%. Bulk stress = interface
+    # traction <= 700 MPa, below every bulk strength, so CONVERGED states are
+    # elastic. Interface behaviour in a deformable polycrystal is what the
+    # RVE tests are for. The yield stresses below are scaled by the same 1e4
+    # so the yield STRAIN is unchanged -- see the [plasticity] block.
+    C_ijkl = '1.718e9 5.75e8 3.02e8 1.067e9 4.69e8 8.42e8 4.21e8 3.11e8 4.66e8'
     coupled_euler_angle_1 = euler_phi1
     coupled_euler_angle_2 = euler_Phi
     coupled_euler_angle_3 = euler_phi2
@@ -188,12 +211,20 @@
   
   [plasticity]
     type = OrthotropicPlasticityStressUpdate
-    sigma_xx_tension = 4980
-    sigma_yy_tension = 4100
-    sigma_zz_tension = 5340
-    tau_xy_max = 4510
-    tau_xz_max = 5080
-    tau_yz_max = 5060
+    # Aragonite strengths x 1e4, matching the x 1e4 stiffness above. Unscaled,
+    # the first Newton iterate of every step (only the right face has moved,
+    # bulk strain ~ du ~ 5e-6) saw a trial stress ~ 1.7e9 * 5e-6 ~ 8600 MPa,
+    # past sigma_xx_tension = 4980: the return map switched on, the next
+    # iterate was elastic again, and Newton flipped between the two states.
+    # Measured to t = 0.1 (unscaled -> scaled), identical damage at the end:
+    #   mixed_mode  10.9 -> 3.5 iterations/step, 4 -> 0 cutbacks, 260 -> 25 steps
+    #   mode_ii     13.6 -> 2.2 iterations/step, 12 -> 0 cutbacks,  57 -> 13 steps
+    sigma_xx_tension = 4.98e7
+    sigma_yy_tension = 4.10e7
+    sigma_zz_tension = 5.34e7
+    tau_xy_max = 4.51e7
+    tau_xz_max = 5.08e7
+    tau_yz_max = 5.06e7
     postyield_mode = 'exp_softening'
     residual_strength = 0.7
     kmax = 0.001
@@ -235,8 +266,13 @@
     # ========================================
     # HOMOGENIZATION PARAMETERS
     # ========================================
-    quality_std_dev = 0.1          # within-QP GH spread (10% CV)
-    spatial_quality_std_dev = 0.15 # across-QP spatial heterogeneity
+    # REGRESSION TEST: the stochastic quality field is switched OFF so this
+    # case is deterministic and mesh-numbering independent. f_spatial is drawn
+    # from _current_elem->id(), so any remesh reshuffles it; and the GH spread
+    # makes the result depend on five contact classes. The heterogeneous
+    # behaviour is exercised by the assertion-based suite, not by a gold file.
+    quality_std_dev = 0            # within-QP GH spread  (0 = single contact)
+    spatial_quality_std_dev = 0    # across-QP spatial heterogeneity (0 = uniform)
     spatial_random_seed = 1234     # spatial quality field seed
     
     # ========================================
@@ -249,7 +285,26 @@
     # VISCOPLASTIC REGULARIZATION
     # Helps with convergence by smoothing damage evolution
     # ========================================
-    damage_viscosity = 1.25       # 1 ms time scale
+    # damage_viscosity is in SIMULATION time units, and dtmax here is 0.01.
+    # The old value 1.25 was therefore a 125-STEP lag, not a mild
+    # regularisation: D fell ~0.04 behind D_target, and since the post-peak
+    # traction is T_peak*r*(1-D) with T_peak*r unbounded, that lag became a
+    # factor ~200 in traction (3727 MPa against a model ceiling of 900 MPa).
+    # Rate-independent is the correct reference: the identity
+    #   1 - D_law = e*r^(eta-1)*exp(-r^eta)
+    # then makes T_peak*r*(1-D) reproduce the exponential envelope exactly.
+    damage_viscosity = 0          # rate-independent
+
+    # Pinned so a future change to the code default cannot move this gold.
+    damage_activation_width = 0.02
+
+    # With eta = 0.15 the softening tail is very fat: the traction is still 27%
+    # of peak at r = 5000, so the solve for delta_c from
+    # failure_traction_ratio = 0.01 needs r ~ 7.7e5 and hits the internal 5000
+    # clamp. Setting delta_c explicitly keeps the previous effective value,
+    # documents it, and silences the clamp warning. Complete failure in this
+    # model is driven by D -> 1, not by reaching delta_c.
+    delta_c = 0.6
   []
 []
 
@@ -380,13 +435,22 @@
   dtmax = 0.01
   dtmin = 1e-4
   dt = 0.001
-  end_time = 7
+  # end_time: with eta = 0.15 the softening tail is very fat (traction still
+  # ~74% of peak at r = 100), so nothing new happens after damage onset
+  # (t ~ 0.01) apart from r growing. By t = 0.5 the run has covered loading,
+  # onset, peak and softening to r ~ 50. The previous end_time = 7
+  # spent thousands of steps on a tail that adds nothing to the check.
+  end_time = 0.5
   
   solve_type = 'NEWTON'
   petsc_options_iname = '-pc_type -pc_factor_mat_solver_package'
   petsc_options_value = 'lu       superlu_dist'
   
-  nl_rel_tol = 1e-6
+  # The stiff bulk scales the first-iteration residual by 1e4; at 1e-6 the
+  # leftover force error would be ~2e-4 of the interface traction, too close
+  # to the 1e-3 the physics checker asserts. 1e-8 puts it at ~1e-6 (measured:
+  # identical checker result to 1e-10, which only costs time).
+  nl_rel_tol = 1e-8
   nl_abs_tol = 1e-8
   l_abs_tol = 1e-8
   nl_max_its = 200

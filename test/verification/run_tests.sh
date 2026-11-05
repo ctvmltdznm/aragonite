@@ -37,7 +37,32 @@
 set -u
 
 # ---- edit these -------------------------------------------------------------
-APP=${APP:-~/projects/aragonite/aragonite-opt}                    # MOOSE executable
+# MOOSE executable: <repo>/<APPLICATION_NAME>-opt from the Makefile, i.e.
+# aragonite-opt on GitHub, tuc-fe-moose-opt on GitLab. APP=<path> overrides.
+# Same rules as scripts/run_validation.sh: two *-opt in the repo root is an
+# error, never a silent pick.
+VERIF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$VERIF_DIR/../.." && pwd)"
+APP_NAME=$(awk -F':=' '/^[[:space:]]*APPLICATION_NAME/{gsub(/[[:space:]]/,"",$2); print $2}' \
+             "$REPO_ROOT/Makefile" 2>/dev/null)
+APP=${APP:-}
+APP=${APP/#\~/$HOME}
+if [ -z "$APP" ]; then
+  if [ -n "$APP_NAME" ] && [ -x "$REPO_ROOT/${APP_NAME}-opt" ]; then
+    APP="$REPO_ROOT/${APP_NAME}-opt"
+  else
+    mapfile -t CAND < <(find "$REPO_ROOT" -maxdepth 1 -name '*-opt' -type f | sort)
+    case ${#CAND[@]} in
+      0) echo "ERROR: no *-opt executable in $REPO_ROOT (expected ${APP_NAME:-<APPLICATION_NAME>}-opt). Build first." >&2; exit 1 ;;
+      1) APP="${CAND[0]}" ;;
+      *) echo "ERROR: ${#CAND[@]} executables in $REPO_ROOT -- refusing to guess; delete the stale one(s) or set APP=<path>:" >&2
+         ls -lt "${CAND[@]}" >&2; exit 1 ;;
+    esac
+  fi
+fi
+[ -x "$APP" ] || { echo "ERROR: '$APP' is not an executable file." >&2; exit 1; }
+echo "executable : $APP  (built $(date -r "$APP" '+%F %T'))"
+echo "git        : $(git -C "$REPO_ROOT" describe --always --dirty 2>/dev/null || echo 'not a git repo')"
 MPI_SMALL=${MPI_SMALL:-""}                     # single-element runs: serial is fine
 MPI_BONE=${MPI_BONE:-"mpiexec -n 32"}           # bone cube
 LH=${LH:-linear_hardening.i}
@@ -409,6 +434,18 @@ PY
     python3 "$ANALYZE" "results/Dksp_$RT.log" --ref-log results/D1.log \
       --ref results/D1.csv --test "results/Dksp_$RT.csv" --tol "$TOL" \
       | tee "results/Dksp_$RT.summary"
+    ;;
+
+  Aq)   # A with tight tolerances, for the Newton convergence-rate figure.
+        # Stops shortly after yield (t = 36.1), so it is cheap.
+    for tg in ref full; do
+      extra=""; [ "$tg" = ref ] && extra="Materials/stress/tangent_operator=elastic"
+      run "Aq_$tg" "$MPI_SMALL" "$LH" Outputs/file_base=results/Aq_$tg $extra \
+        Executioner/nl_rel_tol=1e-13 Executioner/nl_abs_tol=1e-11 \
+        Materials/plasticity/absolute_tolerance=1e-12 \
+        Materials/plasticity/max_iterations_newton=200 \
+        Executioner/end_time=37
+    done
     ;;
 
   Dtol) # tolerance control: same tangent, 100x tighter nonlinear tolerance.

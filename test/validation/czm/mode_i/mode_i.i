@@ -38,6 +38,14 @@
     input = block2
     split_interface = true
   []
+
+  # Newer MOOSE refuses a displaced mesh together with the disjoint neighbour
+  # pairs BreakMeshByBlockGenerator creates, and aborts on GlobalParams/
+  # displacements below. strain = SMALL needs no displaced mesh, so this is
+  # both correct and version-portable. Without it a clean MOOSE checkout fails
+  # with "A displaced mesh cannot be used with a mesh that has disjoint
+  # neighbor boundary pairs".
+  use_displaced_mesh = false
 []
 
 [GlobalParams]
@@ -235,8 +243,13 @@
     # ========================================
     # HOMOGENIZATION PARAMETERS
     # ========================================
-    quality_std_dev = 0.1          # within-QP GH spread (10% CV)
-    spatial_quality_std_dev = 0.15 # across-QP spatial heterogeneity
+    # REGRESSION TEST: the stochastic quality field is switched OFF so this
+    # case is deterministic and mesh-numbering independent. f_spatial is drawn
+    # from _current_elem->id(), so any remesh reshuffles it; and the GH spread
+    # makes the result depend on five contact classes. The heterogeneous
+    # behaviour is exercised by the assertion-based suite, not by a gold file.
+    quality_std_dev = 0            # within-QP GH spread  (0 = single contact)
+    spatial_quality_std_dev = 0    # across-QP spatial heterogeneity (0 = uniform)
     spatial_random_seed = 1234     # spatial quality field seed
     
     # ========================================
@@ -249,7 +262,26 @@
     # VISCOPLASTIC REGULARIZATION
     # Helps with convergence by smoothing damage evolution
     # ========================================
-    damage_viscosity = 1.25       # 1 ms time scale
+    # damage_viscosity is in SIMULATION time units, and dtmax here is 0.01.
+    # The old value 1.25 was therefore a 125-STEP lag, not a mild
+    # regularisation: D fell ~0.04 behind D_target, and since the post-peak
+    # traction is T_peak*r*(1-D) with T_peak*r unbounded, that lag became a
+    # factor ~200 in traction (3727 MPa against a model ceiling of 900 MPa).
+    # Rate-independent is the correct reference: the identity
+    #   1 - D_law = e*r^(eta-1)*exp(-r^eta)
+    # then makes T_peak*r*(1-D) reproduce the exponential envelope exactly.
+    damage_viscosity = 0          # rate-independent
+
+    # Pinned so a future change to the code default cannot move this gold.
+    damage_activation_width = 0.02
+
+    # With eta = 0.15 the softening tail is very fat: the traction is still 27%
+    # of peak at r = 5000, so the solve for delta_c from
+    # failure_traction_ratio = 0.01 needs r ~ 7.7e5 and hits the internal 5000
+    # clamp. Setting delta_c explicitly keeps the previous effective value,
+    # documents it, and silences the clamp warning. Complete failure in this
+    # model is driven by D -> 1, not by reaching delta_c.
+    delta_c = 0.6
   []
 []
 

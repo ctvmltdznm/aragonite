@@ -6,10 +6,14 @@
 # Tests complete framework: exodus reading + coupled elasticity + plasticity
 #
 # VALIDATION MODE (current settings):
-#   end_time = 5.0         Stops before yielding
-#   Purpose: Verify mesh reading, Euler angles
+#   end_time = 0.1 (2 steps)  -- a SETUP check: mesh reading and per-element
+#   Euler angles. Two elastic steps exercise it; 20+ steps added nothing.
 #   Output: Elastic-only response, sufficient for validation
 #
+# validation_mpi_procs = 4
+#   run_validation.sh reads this line and runs THIS test on 4 MPI ranks
+#   (unless -p is given on the command line). The 2-element tests stay serial.
+
 # PRODUCTION MODE (modify for research):
 #   Change end_time to 100.0 or higher
 #   Output: Full plastic deformation, interface failure, realistic polycrystal
@@ -279,17 +283,22 @@
   dtmax = 0.1
   dtmin = 1e-10
   dt = 0.05
-  end_time = 1
+  end_time = 0.1
   
   solve_type = 'NEWTON'
-  petsc_options_iname = '-pc_type -pc_factor_mat_solver_package'
-  petsc_options_value = 'lu       superlu_dist'
+  # Same linear solver as production (config1, needles_y). Measured on
+  # grain_interfaces, 1 step, 36,849 DOFs: superlu_dist LU 766 s serial,
+  # 874 s on 4 ranks; gamg + gmres (ksp_rtol 1e-4) + bt 12.6 s on 4 ranks,
+  # identical Newton history to 4 digits. ksp_rtol only sets how exactly each
+  # Newton step is solved; nl_rel_tol / nl_abs_tol below still set the answer.
+  petsc_options_iname = '-pc_type -pc_gamg_agg_nsmooths -ksp_type -ksp_gmres_restart -ksp_max_it -ksp_rtol'
+  petsc_options_value = 'gamg     2                    gmres     300                200         1e-4'
   nl_rel_tol = 1e-6
   nl_abs_tol = 1e-8
   l_abs_tol = 1e-8
   nl_max_its = 200
   
-  line_search = 'l2'
+  line_search = 'bt'
   
   [TimeStepper]
     type = IterationAdaptiveDT

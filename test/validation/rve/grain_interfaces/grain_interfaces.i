@@ -6,10 +6,16 @@
 # Cohesive zones between grains only (coarser scale)
 #
 # VALIDATION MODE (current settings):
-#   end_time = 5.0        Stops before yielding
-#   Purpose: Verify mesh reading, Euler angles, CZM setup work correctly
+#   end_time = 0.2 (2 steps)  -- this is a SETUP check: mesh reading, Euler
+#   angles from the exodus file, CZM on 6 interfaces. Two elastic steps
+#   exercise all of it; the previous 12+ steps to t = 1.2 took ~an hour and
+#   added nothing (no yield, no damage before t = 1.2 either).
 #   Output: Elastic-only response, sufficient for validation
 #
+# validation_mpi_procs = 4
+#   run_validation.sh reads this line and runs THIS test on 4 MPI ranks
+#   (unless -p is given on the command line). The 2-element tests stay serial.
+
 # PRODUCTION MODE (modify for research):
 #   Change end_time to 100.0 or higher
 #   Output: Full plastic deformation, interface failure, realistic polycrystal
@@ -62,6 +68,11 @@
     # This creates boundaries named: block1_block2, block2_block3, etc.
     # where block numbers correspond to grain_id values
   []
+
+  # Required by newer MOOSE: a displaced mesh is refused together with the
+  # disjoint neighbour pairs BreakMeshByBlockGenerator creates. strain = SMALL
+  # needs no displaced mesh, so this is correct on old and new MOOSE alike.
+  use_displaced_mesh = false
 []
 
 [GlobalParams]
@@ -223,7 +234,10 @@
     type = HomogenizedExponentialCZM
     boundary = 'Block0_Block1 Block0_Block2 Block0_Block3 Block1_Block2 Block1_Block3 Block2_Block3'  # Same as CohesiveZone boundary
 
-    # Proven protein production parameters (config1 run to t=10)
+    # NOT the production parameters. config1_grain_protein_compression.i uses
+    # delta_0_normal = 1.91e-4, delta_0_tangent = 2.17e-4 (MD-scale, 0.19 nm);
+    # 0.1 here is ~500x softer. Harmless for a 2-step elastic setup check, but
+    # this test does not exercise the production interface stiffness.
     normal_strength = 626.0
     shear_strength_s = 374.0
     shear_strength_t = 374.0
@@ -335,17 +349,22 @@
   dtmax = 0.5
   dtmin = 1e-10
   dt = 0.1
-  end_time = 1.2
+  end_time = 0.2
   
   solve_type = 'NEWTON'
-  petsc_options_iname = '-pc_type -pc_factor_mat_solver_package'
-  petsc_options_value = 'lu       superlu_dist'
+  # Same linear solver as production (config1, needles_y). Measured on
+  # grain_interfaces, 1 step, 36,849 DOFs: superlu_dist LU 766 s serial,
+  # 874 s on 4 ranks; gamg + gmres (ksp_rtol 1e-4) + bt 12.6 s on 4 ranks,
+  # identical Newton history to 4 digits. ksp_rtol only sets how exactly each
+  # Newton step is solved; nl_rel_tol / nl_abs_tol below still set the answer.
+  petsc_options_iname = '-pc_type -pc_gamg_agg_nsmooths -ksp_type -ksp_gmres_restart -ksp_max_it -ksp_rtol'
+  petsc_options_value = 'gamg     2                    gmres     300                200         1e-4'
   nl_rel_tol = 1e-6
   nl_abs_tol = 1e-8
   l_abs_tol = 1e-8
   nl_max_its = 200
   
-  line_search = 'l2'
+  line_search = 'bt'
   
   [TimeStepper]
     type = IterationAdaptiveDT
