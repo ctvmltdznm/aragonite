@@ -13,16 +13,52 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 TEST_ROOT="$REPO_ROOT/test/validation"
 
-# Auto-detect executable (repo_name-opt)
-REPO_NAME=$(basename "$REPO_ROOT")
-EXECUTABLE="$REPO_ROOT/${REPO_NAME}-opt"
-
-# Verify it exists, otherwise search for any *-opt
-if [ ! -f "$EXECUTABLE" ]; then
-    FOUND_EXE=$(find "$REPO_ROOT" -maxdepth 1 -name "*-opt" -type f 2>/dev/null | head -n 1)
-    if [ -n "$FOUND_EXE" ]; then
-        EXECUTABLE="$FOUND_EXE"
+# ---- executable resolution --------------------------------------------------
+# The app name comes from the Makefile, NOT from the directory name: this repo
+# is "aragonite" on GitHub and "tuc-fe-moose" on GitLab, so basename() is not a
+# reliable source. APP=/path/to/app-opt overrides everything.
+#
+# Several *-opt in the repo root is an ERROR, never a silent pick. The old code
+# did `find ... | head -n 1`, which returns readdir order; with both
+# aragonite-opt (Oct 23) and tuc_fe_edu-opt (Oct 8) present it ran the stale
+# binary and reported only "Differs from gold" for four CZM tests. Symlinks are
+# excluded by -type f, so a convenience alias is safe.
+APP_NAME=$(awk -F':=' '/^[[:space:]]*APPLICATION_NAME/{gsub(/[[:space:]]/,"",$2); print $2}' \
+             "$REPO_ROOT/Makefile" 2>/dev/null)
+EXECUTABLE=${APP:-}
+if [ -z "$EXECUTABLE" ]; then
+    if [ -n "$APP_NAME" ] && [ -x "$REPO_ROOT/${APP_NAME}-opt" ]; then
+        EXECUTABLE="$REPO_ROOT/${APP_NAME}-opt"
+    else
+        mapfile -t CAND < <(find "$REPO_ROOT" -maxdepth 1 -name '*-opt' -type f | sort)
+        case ${#CAND[@]} in
+          0) echo "ERROR: no *-opt executable in $REPO_ROOT." >&2
+             echo "       Expected '${APP_NAME:-<APPLICATION_NAME>}-opt'. Build first: make -j" >&2
+             exit 1 ;;
+          1) EXECUTABLE="${CAND[0]}" ;;
+          *) echo "ERROR: ${#CAND[@]} executables in $REPO_ROOT -- refusing to guess:" >&2
+             ls -lt "${CAND[@]}" >&2
+             echo "       Makefile says APPLICATION_NAME = ${APP_NAME:-<unset>}." >&2
+             echo "       Delete the stale one(s), or set APP=<path>." >&2
+             exit 1 ;;
+        esac
     fi
+fi
+[ -x "$EXECUTABLE" ] || { echo "ERROR: $EXECUTABLE is not executable." >&2; exit 1; }
+
+# ---- provenance, printed on EVERY run --------------------------------------
+# A suite that does not record which binary and which source it ran cannot be
+# compared across machines, and that is how a two-week-old library produced
+# four "Differs from gold" failures that looked like a physics regression.
+echo "executable : $EXECUTABLE"
+echo "built      : $(date -r "$EXECUTABLE" '+%F %T')"
+echo "app_name   : ${APP_NAME:-<unset>}"
+echo "git        : $(git -C "$REPO_ROOT" describe --always --dirty 2>/dev/null || echo 'not a git repo')"
+STALE=$(find "$REPO_ROOT/src" "$REPO_ROOT/include" \( -name '*.C' -o -name '*.h' \) \
+          -newer "$EXECUTABLE" 2>/dev/null | head -5)
+if [ -n "$STALE" ]; then
+    echo "WARNING: source is NEWER than the executable -- rebuild before trusting results:"
+    printf '         %s\n' $STALE
 fi
 
 COMPARE_SCRIPT="$SCRIPT_DIR/compare_with_gold.py"
@@ -154,9 +190,21 @@ run_single_test() {
     
     cd "$test_dir"
     
+    # Per-test rank count: a line "# validation_mpi_procs = N" in the input.
+    # -p on the command line overrides it for every test. Without either, serial.
+    # (A single global -p would also push the 2-element tests onto N ranks.)
+    local procs=$PARALLEL_PROCS
+    if [ "$PARALLEL_PROCS" -eq 1 ]; then
+        local want
+        want=$(grep -m1 -E '^#[[:space:]]*validation_mpi_procs[[:space:]]*=[[:space:]]*[0-9]+' "$input_file" \
+                 | grep -oE '[0-9]+$')
+        [ -n "$want" ] && procs=$want
+    fi
+    [ "$procs" -gt 1 ] && echo -n "[np=$procs] "
+
     # Run simulation (suppress output, ignore segfaults)
-    if [ $PARALLEL_PROCS -gt 1 ]; then
-        mpirun -n $PARALLEL_PROCS "$EXECUTABLE" -i "$input_file" > /dev/null 2>&1 || true
+    if [ $procs -gt 1 ]; then
+        mpirun -n $procs "$EXECUTABLE" -i "$input_file" > /dev/null 2>&1 || true
     else
         "$EXECUTABLE" -i "$input_file" > /dev/null 2>&1 || true
     fi
@@ -218,7 +266,10 @@ run_category_tests() {
     print_category "$category" "${TEST_CATEGORIES[$category]}"
     
     for test_dir in "$category_dir"/*; do
-        if [ -d "$test_dir" ]; then
+        # A test is a directory <name>/ containing <name>.i. Anything else
+        # (__pycache__/, scratch dirs, check scripts' helpers) is not a test
+        # and is ignored rather than counted as SKIPPED.
+        if [ -d "$test_dir" ] && [ -f "$test_dir/$(basename "$test_dir").i" ]; then
             run_single_test "$test_dir"
         fi
     done
