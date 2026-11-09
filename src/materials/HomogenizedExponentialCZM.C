@@ -10,8 +10,13 @@
 // Numerical improvements over earlier versions:
 //   1. Smooth Macaulay bracket everywhere — traction and Jacobian are derived
 //      from the same smooth function, eliminating the Newton 2-cycle.
-//   2. History variable kappa = max(delta_eff) for irreversibility — damage
-//      is strictly monotone; no healing under unloading or partial closure.
+//   2. Normalised history r_max = max(delta_eff / delta_0(phi)) for
+//      irreversibility — damage is strictly monotone; no healing under
+//      unloading, and no spurious growth when the mode ratio changes without
+//      further opening (e.g. closure after shear-dominated opening, where phi
+//      drops to ~0 and delta_0 switches from delta_0_tangent to delta_0_normal).
+//      kappa = r_max * delta_0(phi) is the equivalent opening at the current
+//      mode ratio and is what the damage law and secant switch see.
 //   3. Smooth tanh damage activation — removes the kink in dD/ddelta at
 //      delta_eff = delta_0 that caused Newton oscillation near initiation.
 //   4. Consistent viscous tangent — visc_factor is set to zero whenever the
@@ -312,11 +317,18 @@ HomogenizedExponentialCZM::computeInterfaceTractionAndDerivatives()
       }
     }
 
-    // ── History variable kappa: max delta_eff seen by this class ──────────
-    // Enforces irreversibility: damage can only grow, never heal.
-    const Real kappa_old_g = _qp_kappa_old[_qp][g];
-    const Real kappa_g     = std::max(kappa_old_g, delta_eff);
-    _qp_kappa[_qp][g]      = kappa_g;
+    // ── History variable: normalised max opening r_max = max(delta_eff/d0_g) ──
+    // Enforces irreversibility: damage can only grow, never heal. Stored
+    // normalised because d0_g depends on the CURRENT mode ratio phi: an absolute
+    // max(delta_eff) re-evaluated against a smaller d0 (e.g. on closure, phi -> 0)
+    // would raise r_k and ratchet damage without any further opening.
+    // qp_kappa therefore holds r_max (dimensionless); kappa_g below is the
+    // equivalent opening at the current phi, so the code downstream is unchanged.
+    const Real rmax_old_g = _qp_kappa_old[_qp][g];
+    const Real r_now_g    = delta_eff / d0_g;
+    const Real rmax_g     = std::max(rmax_old_g, r_now_g);
+    _qp_kappa[_qp][g]     = rmax_g;
+    const Real kappa_g    = rmax_g * d0_g;
 
     // Damage acts on the secant ray through the peak once this class has passed it.
     // (1 - D) * T_peak * r reproduces e r^eta exp(-r^eta) exactly on monotonic loading,
@@ -329,8 +341,10 @@ HomogenizedExponentialCZM::computeInterfaceTractionAndDerivatives()
       dT_base_g = T_peak_g / d0_g;
     }
 
-    // dkappa/d(delta_eff): 1 if currently at the maximum, 0 during unloading
-    const Real dkappa_deff = (delta_eff >= kappa_old_g - 1e-14) ? 1.0 : 0.0;
+    // dkappa/d(delta_eff): 1 if currently at the maximum, 0 during unloading.
+    // (kappa = d0_g * r_now while loading; the phi-dependence of d0 through D is
+    //  not linearised here, which affects the convergence rate only.)
+    const Real dkappa_deff = (r_now_g >= rmax_old_g - 1e-14) ? 1.0 : 0.0;
 
     // ── Smooth damage activation and law (in terms of kappa) ──────────────
     // Hard if (kappa >= d0_g) creates a Jacobian kink at initiation.
